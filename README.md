@@ -1,50 +1,39 @@
 # huma-observability
 
-`huma-observability` is a small, opinionated companion package for [Huma](https://github.com/danielgtaylor/huma) APIs that need request correlation and structured Zap access logs.
+`huma-observability` provides request correlation and structured Zap access
+logging middleware for [Huma](https://github.com/danielgtaylor/huma) APIs.
 
-It is not official Huma framework middleware. It is designed to be used by multiple Huma services that want the same production logging contract without copying middleware into each application.
+The module path is `github.com/janisto/huma-observability`; the declared Go
+package name is `obs`.
 
-## What It Provides
+This is not official Huma framework middleware. It is a small, opinionated
+package for services that want the same production logging contract without
+copying middleware into every application.
 
-- W3C `traceparent` parsing with strict validation.
-- Request ID extraction, validation, generation, response propagation, and context accessors.
+## When To Use It
+
+Use this package when your Huma service needs:
+
+- Request IDs with validation, generation, response propagation, and context
+  accessors.
 - Request-scoped `*zap.Logger` values available through `obs.Logger(ctx)`.
-- Router-agnostic Huma middleware using `func(huma.Context, func(huma.Context))`.
-- JSON stdout logger presets for generic, Google Cloud, AWS, and Azure environments.
-- Google Cloud Logging support for `severity`, `httpRequest`, and raw Cloud Trace IDs from W3C trace context.
-- AWS X-Ray and Azure Application Insights correlation fields derived from incoming trace context.
+- JSON access logs from Huma middleware, independent of the HTTP router.
+- W3C `traceparent` parsing for trace-level log correlation.
+- Cloud-oriented log fields for Google Cloud Logging, AWS CloudWatch/X-Ray
+  query paths, or Azure Monitor/Application Insights ingestion.
 
-It does not create tracing spans, export metrics, install OpenTelemetry, or implement RFC 9457 Problem Details behavior.
+Do not use this package as a tracing system. It does not create spans, export
+metrics, configure OpenTelemetry, or create AWS X-Ray segments.
 
-## W3C Trace Context
+## Requirements
 
-W3C `traceparent` is the common trace-correlation input for every cloud preset.
-The middleware validates the header once, stores the same trace ID on the
-request context, and derives one provider-specific log shape from it:
+- Go 1.25 or newer.
+- Huma v2.
+- Zap.
 
-- Generic logs get `trace_id`, `parent_id`, `trace_flags`, and `trace_sampled`.
-- Google Cloud logs get `logging.googleapis.com/trace` using Google's preferred raw `TRACE_ID` format.
-- AWS logs get `xray_trace_id`, derived from the W3C trace ID in AWS X-Ray format.
-- Azure logs get `operation_Id` and `operation_ParentId`, matching Application Insights' W3C mapping.
-
-Provider-specific propagation headers such as `X-Cloud-Trace-Context` and
-`X-Amzn-Trace-Id` are not parsed by this package. If you need full trace
-waterfalls, spans, dependency telemetry, or automatic span-level log
-correlation, add OpenTelemetry or the relevant cloud instrumentation beside
-this middleware.
-
-For Go HTTP tracing, use OpenTelemetry's `otelhttp` instrumentation in your
-application when you need real server/client spans and outbound propagation.
-Typical setups use `otelhttp.NewHandler` for HTTP handlers and
-`otelhttp.NewTransport` for HTTP clients. This package does not configure
-OpenTelemetry SDKs, exporters, samplers, or global tracer providers.
-
-Background references:
-
-- Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred format: https://docs.cloud.google.com/trace/docs/trace-log-integration
-- AWS X-Ray documents how W3C trace IDs are represented in X-Ray format: https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html
-- Azure Application Insights documents W3C Trace Context mapping to operation fields: https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
-- OpenTelemetry `otelhttp` provides Go HTTP server and client instrumentation: https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+The package is currently intended for a `v0.x` release line. Public API names
+and log field names are maintained carefully, but this is not a v1
+compatibility promise yet.
 
 ## Install
 
@@ -52,21 +41,24 @@ Background references:
 go get github.com/janisto/huma-observability
 ```
 
-The module path remains `github.com/janisto/huma-observability`, but the Go
-package name is `obs`. Import the module normally and use `obs.*` at call sites.
+Import it explicitly as `obs` in examples and application code:
 
-This package is currently intended for a `v0.x` release line. Treat public API names and log field names as carefully maintained, but not yet a v1 compatibility promise.
+```go
+import obs "github.com/janisto/huma-observability"
+```
 
-## Basic Setup
+## Quick Start
 
-More complete examples, including per-cloud deployment notes, are in [EXAMPLES.md](EXAMPLES.md).
+More complete runnable examples, including per-cloud deployment notes, are in
+[EXAMPLES.md](EXAMPLES.md).
 
 ```go
 package main
 
 import (
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/janisto/huma-observability"
+
+	obs "github.com/janisto/huma-observability"
 )
 
 func setup(api huma.API) error {
@@ -86,9 +78,13 @@ func setup(api huma.API) error {
 }
 ```
 
-Middleware order matters: install `RequestContext` before `AccessLogger` so handlers and lower-level services get request metadata and the request-scoped logger.
+Middleware order is part of the contract: install `RequestContext` before
+`AccessLogger`. That gives handlers and lower-level services access to request
+metadata and the request-scoped logger.
 
-## Logging In Handlers And Services
+## Handler Logging
+
+Use `obs.Logger(ctx)` anywhere you have the request `context.Context`.
 
 ```go
 func GetRepository(ctx context.Context, owner, repo string) error {
@@ -100,9 +96,44 @@ func GetRepository(ctx context.Context, owner, repo string) error {
 }
 ```
 
-`Logger(ctx)` never returns nil. If no request logger has been installed, it returns a no-op logger.
+`Logger(ctx)` never returns nil. If no request logger has been installed, it
+returns a no-op logger.
 
-## Google Cloud
+## Trace Correlation
+
+W3C `traceparent` is the only trace context input parsed by this package. When
+the header is valid, the W3C trace ID becomes the request `correlation_id` and
+provider-specific trace field source. When the header is missing or invalid,
+`correlation_id` falls back to `request_id`.
+
+This means every log line gets a stable grouping key:
+
+- With valid W3C trace context: group by `correlation_id=<trace-id>`.
+- Without valid trace context: group by `correlation_id=<request-id>`.
+
+The package also emits common trace fields when a valid trace exists:
+
+- `trace_id`
+- `parent_id`
+- `trace_flags`
+- `trace_sampled`
+
+Provider-specific propagation headers such as `X-Cloud-Trace-Context`,
+`X-Amzn-Trace-Id`, and Azure's legacy `Request-Id` header are intentionally not
+parsed. If your service must bridge those headers into W3C Trace Context, do
+that with cloud SDK instrumentation or OpenTelemetry beside this package.
+
+For real Go HTTP tracing, use OpenTelemetry's `otelhttp` instrumentation in
+your application. `otelhttp.NewHandler` wraps HTTP handlers with server spans,
+and `otelhttp.NewTransport` instruments HTTP clients and outbound propagation.
+This package does not configure OpenTelemetry SDKs, exporters, samplers, or
+global tracer providers.
+
+## Cloud Presets
+
+Use the same preset for `NewLogger` and `AccessLogger`.
+
+### Google Cloud
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -119,15 +150,18 @@ api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 }))
 ```
 
-When a valid W3C trace ID is available, logs include:
+The GCP preset emits Cloud Logging-friendly JSON:
 
-- `logging.googleapis.com/trace`: the raw W3C `TRACE_ID`
-- `logging.googleapis.com/trace_sampled`: the W3C sampled flag
-- `httpRequest`: Cloud Logging's HTTP request object
+- `severity` instead of `level`.
+- `httpRequest` for access logs.
+- `logging.googleapis.com/trace` with the raw W3C `TRACE_ID`.
+- `logging.googleapis.com/trace_sampled` from the W3C sampled flag.
 
-The middleware does not emit `logging.googleapis.com/spanId` from a W3C parent ID. Those values are not the same contract.
+The middleware does not emit `logging.googleapis.com/spanId` from a W3C
+`parent-id`. A log span ID must come from a real current span; the incoming
+parent ID is not the same semantic value.
 
-## AWS
+### AWS
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -136,16 +170,27 @@ logger, err := obs.NewLogger(obs.LoggerConfig{
 if err != nil {
 	return err
 }
+
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+	Logger: logger,
+	Preset: obs.PresetAWS,
+}))
 ```
 
-AWS logs stay flat JSON with `timestamp`, `level`, and `message`. With a valid
-W3C `traceparent`, the AWS preset also emits `xray_trace_id`, converting the W3C
-trace ID into AWS X-Ray format.
+The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
+`message`. With a valid W3C `traceparent`, it also emits:
 
-The middleware does not create AWS X-Ray segments or OpenTelemetry spans.
-It does not emit `span_id` from an incoming parent ID.
+- `trace_id`
+- `parent_id`
+- `trace_flags`
+- `trace_sampled`
+- `xray_trace_id`, derived from the W3C trace ID in AWS X-Ray format.
 
-## Azure
+The middleware does not create AWS X-Ray segments and does not emit `span_id`
+from an incoming W3C parent ID.
+
+### Azure
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -154,31 +199,47 @@ logger, err := obs.NewLogger(obs.LoggerConfig{
 if err != nil {
 	return err
 }
+
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+	Logger: logger,
+	Preset: obs.PresetAzure,
+}))
 ```
 
-Azure logs stay flat JSON with `timestamp`, `level`, and `message`. With a valid
-W3C `traceparent`, the Azure preset emits Application Insights-compatible
-`operation_Id` and `operation_ParentId` fields in addition to the common W3C
-trace fields.
+The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
+`message`. With a valid W3C `traceparent`, it emits:
 
-## Field Contract
-
-Package-owned fields use `snake_case`.
-
-Request metadata fields:
-
-- `request_id`
-- `correlation_id`
 - `trace_id`
 - `parent_id`
 - `trace_flags`
 - `trace_sampled`
+- `operation_Id`, mapped from the W3C trace ID.
+- `operation_ParentId`, mapped from the W3C parent ID.
+
+## Field Contract
+
+Package-owned fields use `snake_case`. Provider-required fields keep the names
+expected by the target platform.
+
+Request metadata fields:
+
+| Field | Meaning |
+| --- | --- |
+| `request_id` | The local HTTP request ID for this service. |
+| `correlation_id` | The W3C trace ID when valid trace context exists; otherwise the request ID. |
+| `trace_id` | The W3C trace ID from `traceparent`. |
+| `parent_id` | The W3C parent ID from `traceparent`. |
+| `trace_flags` | The W3C trace flags value. |
+| `trace_sampled` | Boolean value derived from the sampled flag. |
 
 Provider-specific fields:
 
-- GCP: `logging.googleapis.com/trace`, `logging.googleapis.com/trace_sampled`
-- AWS: `xray_trace_id`
-- Azure: `operation_Id`, `operation_ParentId`
+| Preset | Fields |
+| --- | --- |
+| GCP | `logging.googleapis.com/trace`, `logging.googleapis.com/trace_sampled`, `httpRequest` |
+| AWS | `xray_trace_id` |
+| Azure | `operation_Id`, `operation_ParentId` |
 
 Access log fields:
 
@@ -191,35 +252,58 @@ Access log fields:
 - `remote_ip`
 - `user_agent`
 
-`AccessLoggerConfig.ExtraFields` may add application-specific fields to the access log. Fields using package-owned or provider-reserved keys are ignored to keep JSON logs from containing duplicate core keys.
-
 Logger keys:
 
-- Generic, AWS, Azure: `timestamp`, `level`, `message`, optional `logger`
-- GCP: `timestamp`, `severity`, `message`, optional `logger`
+- Generic, AWS, Azure: `timestamp`, `level`, `message`, optional `logger`.
+- GCP: `timestamp`, `severity`, `message`, optional `logger`.
 
-## Request IDs And Trace Correlation
+`AccessLoggerConfig.ExtraFields` may add application-specific fields to the
+access log. Fields using package-owned or provider-reserved keys are ignored to
+avoid duplicate core keys in the JSON output.
 
-Defaults:
+## Request IDs
 
-- Request ID header: `X-Request-Id`
-- Trace header: `traceparent`
-- Tracestate header: `tracestate`
-- Response request ID header: same as request ID header
-- Generated request IDs: 16 random bytes encoded as lowercase hex
+Default request context behavior:
 
-Invalid incoming request IDs are ignored and replaced. Invalid `traceparent` values are ignored for correlation while request processing continues.
+- Request ID header: `X-Request-Id`.
+- Trace header: `traceparent`.
+- Tracestate header: `tracestate`.
+- Response request ID header: same as the request ID header.
+- Generated request IDs: 16 random bytes encoded as lowercase hex.
 
-`CorrelationID(ctx)` returns the W3C trace ID when a valid `traceparent` exists. Otherwise it returns the request ID.
+Invalid incoming request IDs are ignored and replaced. Invalid `traceparent`
+values are ignored for correlation while request processing continues.
+
+`CorrelationID(ctx)` returns the same value written to `correlation_id`: the
+W3C trace ID when a valid `traceparent` exists, otherwise the request ID.
+
+Set `DisableResponseHeader` when an upstream gateway owns request ID response
+headers and the application should not write one.
+
+## Logger Configuration
+
+`NewLogger` creates a JSON Zap logger. By default it writes application logs to
+stdout and Zap internal errors to stderr.
+
+Useful options:
+
+- `Preset`: selects generic, GCP, AWS, or Azure field naming.
+- `Level`: sets the Zap level enabler. Defaults to info.
+- `Writer`: overrides the application log destination.
+- `ErrorWriter`: overrides Zap's internal error destination.
+- `AddCaller`: includes Zap caller fields.
+- `Development`: enables Zap development behavior.
 
 ## Panic Behavior
 
-`AccessLogger` logs a `500` access log when downstream middleware or handlers panic, then re-panics. It does not recover the request or hide the panic from upstream recovery middleware.
+`AccessLogger` logs a `500` access log when downstream middleware or handlers
+panic, then re-panics. It does not recover the request or hide the panic from
+upstream recovery middleware.
 
 ## Optional Local Wrapper
 
-Applications that want shorter local logging helpers can add them in application
-code. A complete copyable example is available at
+Applications that want shorter local logging helpers can add them in
+application code. A complete copyable example is available at
 [examples/local-wrapper/applog/log.go](examples/local-wrapper/applog/log.go).
 It intentionally stays small: `Log`, `Debug`, `Info`, `Warn`, and `Error`.
 
@@ -228,9 +312,12 @@ applog.Info(ctx, "repository loaded", zap.String("repository", "payments"))
 applog.Error(ctx, "github request failed", err, zap.Int("status", status))
 ```
 
-The package itself stays Zap-native and does not add application-specific `LogWarn` or `LogError` wrappers.
+The package itself stays Zap-native and does not add application-specific
+`LogWarn` or `LogError` wrappers.
 
 ## Validation
+
+Use the same checks locally that CI runs:
 
 ```sh
 go test ./...
@@ -242,3 +329,15 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
 "$(go env GOPATH)/bin/govulncheck" ./...
 test -z "$(gofmt -l .)"
 ```
+
+## References
+
+- Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
+  trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
+- AWS X-Ray documents W3C trace IDs formatted as X-Ray trace IDs:
+  https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html
+- Azure Application Insights documents W3C Trace Context mapping to
+  `Operation_Id` and `Operation_ParentId`:
+  https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
+- OpenTelemetry `otelhttp` provides Go HTTP server and client instrumentation:
+  https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
