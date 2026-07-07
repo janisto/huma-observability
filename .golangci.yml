@@ -1,0 +1,137 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errorlint
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - godoclint
+    - gomoddirectives
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - loggercheck
+    - makezero
+    - mirror
+    - misspell
+    - modernize
+    - musttag
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - predeclared
+    - staticcheck
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    gosec:
+      excludes:
+        - G104
+
+    gomoddirectives:
+      exclude-forbidden: true
+      ignore-forbidden: true
+      toolchain-forbidden: true
+      tool-forbidden: true
+      go-debug-forbidden: true
+      check-module-path: true
+
+    govet:
+      enable:
+        - shadow
+
+    loggercheck:
+      kitlog: false
+      klog: false
+      logr: false
+      slog: false
+      zap: true
+      require-string-key: true
+      no-printf-like: true
+
+    misspell:
+      locale: US
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+
+  exclusions:
+    generated: strict
+
+formatters:
+  enable:
+    - gci
+    - gofumpt
+    - golines
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/janisto/huma-observability)
+      custom-order: true
+
+    gofumpt:
+      module-path: github.com/janisto/huma-observability
+      extra-rules: true
+
+    golines:
+      max-len: 120
+      tab-len: 4
+
+  exclusions:
+    generated: strict
+    paths:
+      - ".*_mock.go"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+
+  show-stats: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
