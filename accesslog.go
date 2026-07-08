@@ -34,16 +34,11 @@ func AccessLogger(config AccessLoggerConfig) func(huma.Context, func(huma.Contex
 		start := cfg.Now()
 		metadata, ctx := ensureRequestMetadata(ctx)
 
-		logger := cfg.Logger.With(requestMetadataFields(metadata)...)
-		switch cfg.Preset {
-		case PresetGCP:
-			logger = logger.With(gcpTraceFields(metadata.Trace)...)
-		case PresetAWS:
-			logger = logger.With(awsTraceFields(metadata.Trace)...)
-		case PresetAzure:
-			logger = logger.With(azureTraceFields(metadata.Trace)...)
+		logger := metadata.Logger
+		if logger == nil {
+			logger = loggerWithMetadata(cfg.Logger, metadata, cfg.Preset)
+			ctx = withRequestLogger(ctx, metadata, logger)
 		}
-		ctx = withRequestLogger(ctx, metadata, logger)
 
 		defer func() {
 			panicValue := recover()
@@ -102,6 +97,25 @@ func logAt(logger *zap.Logger, level zapcore.Level, msg string, fields ...zap.Fi
 	if entry := logger.Check(level, msg); entry != nil {
 		entry.Write(fields...)
 	}
+}
+
+func loggerWithMetadata(logger *zap.Logger, metadata *requestMetadata, preset Preset) *zap.Logger {
+	if logger == nil {
+		logger = noopLogger
+	}
+	logger = logger.With(requestMetadataFields(metadata)...)
+	if metadata == nil {
+		return logger
+	}
+	switch preset {
+	case PresetGCP:
+		logger = logger.With(gcpTraceFields(metadata.Trace)...)
+	case PresetAWS:
+		logger = logger.With(awsTraceFields(metadata.Trace)...)
+	case PresetAzure:
+		logger = logger.With(azureTraceFields(metadata.Trace)...)
+	}
+	return logger
 }
 
 func requestMetadataFields(metadata *requestMetadata) []zap.Field {

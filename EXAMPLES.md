@@ -1,8 +1,8 @@
 # Examples
 
-This file shows how to wire `huma-observability` into Huma services and how to
-configure the same logging contract for generic JSON logs, Google Cloud, AWS,
-and Azure.
+This file shows how to wire `huma-observability` into Huma v2 services and how
+to configure the same logging contract for generic JSON logs, Google Cloud,
+AWS, and Azure.
 
 The runnable examples are:
 
@@ -15,10 +15,10 @@ The runnable examples are:
 | [examples/local-wrapper/applog/log.go](examples/local-wrapper/applog/log.go) | Optional project-local logging helper package. |
 
 The module path is `github.com/janisto/huma-observability`; the Go package name
-is `obs`. In snippets, import it explicitly:
+is `obs`, so code uses the `obs` identifier after importing the module path:
 
 ```go
-import obs "github.com/janisto/huma-observability"
+import "github.com/janisto/huma-observability"
 ```
 
 ## Core Wiring
@@ -27,8 +27,10 @@ Every service follows the same shape:
 
 1. Create a base logger with the selected preset.
 2. Attach stable project fields to the base logger.
-3. Install `RequestContext` before `AccessLogger`.
-4. Use `obs.Logger(ctx)` in handlers and lower-level services.
+3. Install Huma `RequestContext` before Huma `AccessLogger`.
+4. For mixed services, install `HTTPRequestContext` at the HTTP router
+   boundary.
+5. Use `obs.Logger(ctx)` in handlers and lower-level services.
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -44,15 +46,26 @@ logger = logger.With(
 	zap.String("version", envOrDefault("SERVICE_VERSION", "dev")),
 )
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 }))
+
+handler := obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
+	Logger: logger,
+})(mux)
 ```
 
-Middleware order matters. `RequestContext` installs request metadata on the
-context; `AccessLogger` adds the request-scoped logger and writes the access log
-after the handler returns.
+Middleware order matters. `HTTPRequestContext` installs request metadata for
+the whole HTTP surface and installs a request-scoped logger when `Logger` is
+configured. Huma `RequestContext` reuses that metadata on Huma routes. Huma
+`AccessLogger` emits operation-aware access logs for Huma routes only.
+
+`HTTPRequestContext` does not emit access logs and does not wrap
+`http.ResponseWriter`. If a project needs access logs for non-Huma routes, keep
+that middleware in the application or router layer.
 
 ## Shared Environment Fields
 
@@ -66,7 +79,7 @@ become project-specific.
 | `SERVICE_VERSION` | `version` | `v0.3.1`, image tag, commit SHA | Use a deployable artifact identifier. |
 | `PORT` | none | `8080` | Used by the runnable examples only. |
 
-Base logger fields appear on both handler logs and access logs.
+Base logger fields appear on handler logs and Huma access logs.
 `AccessLoggerConfig.ExtraFields` is access-log-only and should be used for
 request/response fields that do not belong on every handler log. Extra fields
 using package-owned or provider-reserved keys are ignored to avoid duplicate
@@ -84,17 +97,119 @@ SERVICE_NAME=example-api SERVICE_ENV=local SERVICE_VERSION=dev \
 go run ./examples/basic
 ```
 
-Call it with a request ID:
+Call the Huma route with a request ID:
 
 ```sh
 curl -H 'X-Request-Id: demo-123' http://localhost:8080/health
 ```
 
-Expected access-log shape:
+Expected Huma access-log shape:
 
 ```json
 {"timestamp":"2026-07-07T12:00:00Z","level":"INFO","message":"request completed","service":"example-api","environment":"local","version":"dev","request_id":"demo-123","correlation_id":"demo-123","method":"GET","path":"/health","path_template":"/health","operation_id":"get-health","status":200,"duration_ms":1.2,"remote_ip":"127.0.0.1","user_agent":"curl/8.0.0"}
 ```
+
+Call the non-Huma readiness route:
+
+```sh
+curl -i -H 'X-Request-Id: demo-456' http://localhost:8080/ready
+```
+
+The response includes `X-Request-Id: demo-456`, and the handler can log with
+`obs.Logger(r.Context())`.
+
+Expected non-Huma handler-log shape:
+
+```json
+{"timestamp":"2026-07-07T12:00:00Z","level":"INFO","message":"readiness check","service":"example-api","environment":"local","version":"dev","request_id":"demo-456","correlation_id":"demo-456","method":"GET","path":"/ready","status":204,"duration_ms":1.2}
+```
+
+This package does not emit an access log for `/ready`; the example logs the
+route event inside the handler.
+
+## Non-Huma Route Logging
+
+For plain `net/http` handlers, log the route event directly. This avoids
+response-writer wrapping and is enough for health checks, readiness probes,
+redirects, and other small non-Huma routes:
+
+```go
+mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	w.WriteHeader(http.StatusNoContent)
+	obs.Logger(r.Context()).Info("readiness check",
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.EscapedPath()),
+		zap.Int("status", http.StatusNoContent),
+		zap.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)),
+	)
+})
+```
+
+For Chi applications that want access logs for non-Huma route groups, keep that
+middleware in the application and use Chi's response-writer wrapper instead of
+adding one to this package:
+
+```go
+import (
+	"net/http"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/janisto/huma-observability"
+	"go.uber.org/zap"
+)
+
+func chiAccessLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		obs.Logger(r.Context()).Info("http request completed",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.EscapedPath()),
+			zap.Int("status", status),
+			zap.Int("bytes_written", ww.BytesWritten()),
+			zap.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)),
+		)
+	})
+}
+
+func readyHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func routes(logger *zap.Logger, api huma.API, router chi.Router) http.Handler {
+	router.Use(obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
+		Logger: logger,
+	}))
+
+	router.Group(func(r chi.Router) {
+		r.Use(chiAccessLogger)
+		r.Get("/ready", readyHandler)
+	})
+
+	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+		Logger: logger,
+	}))
+	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+		Logger: logger,
+	}))
+
+	return router
+}
+```
+
+Apply the Chi access logger only to non-Huma route groups if Huma routes already
+use `obs.AccessLogger`; otherwise one request can produce two access log lines.
 
 Send a request with W3C trace context:
 
@@ -105,7 +220,7 @@ curl \
   http://localhost:8080/health
 ```
 
-With a valid `traceparent`, handler logs and access logs include:
+With a valid `traceparent`, handler logs and Huma access logs include:
 
 - `request_id`: `demo-123`
 - `correlation_id`: `4bf92f3577b34da6a3ce929d0e0e4736`
@@ -129,8 +244,15 @@ func loadRepository(ctx context.Context, owner, repo string) error {
 }
 ```
 
-`obs.Logger(ctx)` never returns nil. If middleware has not installed a
-request-scoped logger, it returns a no-op logger.
+`obs.Logger(ctx)` never returns nil. Configure `RequestContextConfig.Logger` for
+Huma-only services, or `HTTPRequestContextConfig.Logger` at the router boundary
+for mixed Huma and non-Huma services. If a context did not pass through
+configured request-context middleware, `obs.Logger(ctx)` returns a no-op logger
+instead of using a package-global logger or implicit stdout fallback.
+
+Recovery middleware that logs with `obs.Logger(r.Context())` must run after
+`HTTPRequestContext` if it needs request metadata. Logs emitted before
+request-context middleware may not have `request_id`.
 
 ## Request ID And Trace Headers
 
@@ -147,12 +269,16 @@ Custom ingress example:
 
 ```go
 api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger:            logger,
 	RequestIDHeader:   "X-Correlation-Id",
 	ResponseHeader:    "X-Correlation-Id",
 	TraceparentHeader: "traceparent",
 	TracestateHeader:  "tracestate",
 }))
 ```
+
+For router-wide HTTP middleware, use the same field names on
+`HTTPRequestContextConfig`.
 
 Behavior to verify in every project:
 
@@ -171,7 +297,8 @@ correlation. For Go HTTP services, `otelhttp.NewHandler` and
 
 Runnable example: [examples/gcp/main.go](examples/gcp/main.go).
 
-Use `PresetGCP` for both the logger and access logger:
+Use `PresetGCP` for the logger, Huma request context, Huma access logger, and
+HTTP request context:
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -190,7 +317,10 @@ logger = logger.With(
 	zap.String("cloud_location", os.Getenv("GOOGLE_CLOUD_LOCATION")),
 )
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetGCP,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetGCP,
@@ -230,7 +360,7 @@ or change values, use the Cloud Run update flow instead.
 GCP log shape:
 
 - Logger key is `severity`, not `level`.
-- Access logs include Cloud Logging's `httpRequest` object.
+- Huma access logs include Cloud Logging's `httpRequest` object.
 - With a valid W3C trace ID, logs include `logging.googleapis.com/trace` using
   the raw `TRACE_ID`.
 - When sampling is known, logs include `logging.googleapis.com/trace_sampled`.
@@ -259,7 +389,8 @@ jsonPayload.correlation_id="4bf92f3577b34da6a3ce929d0e0e4736"
 
 Runnable example: [examples/aws/main.go](examples/aws/main.go).
 
-Use `PresetAWS` for both the logger and access logger:
+Use `PresetAWS` for the logger, Huma request context, Huma access logger, and
+HTTP request context:
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -277,7 +408,10 @@ logger = logger.With(
 	zap.String("cloud_region", os.Getenv("AWS_REGION")),
 )
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetAWS,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetAWS,
@@ -313,34 +447,6 @@ AWS trace fields:
 - The package does not create AWS X-Ray segments and does not emit `span_id`
   from the incoming W3C parent ID.
 
-ECS task definition fragment:
-
-```json
-{
-  "containerDefinitions": [
-    {
-      "name": "api",
-      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/api:TAG",
-      "portMappings": [{ "containerPort": 8080 }],
-      "environment": [
-        { "name": "SERVICE_NAME", "value": "api" },
-        { "name": "SERVICE_ENV", "value": "prod" },
-        { "name": "SERVICE_VERSION", "value": "TAG" },
-        { "name": "AWS_REGION", "value": "eu-north-1" }
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/api",
-          "awslogs-region": "eu-north-1",
-          "awslogs-stream-prefix": "api"
-        }
-      }
-    }
-  ]
-}
-```
-
 CloudWatch Logs Insights query examples:
 
 ```sql
@@ -367,7 +473,8 @@ fields @timestamp, message, trace_id, xray_trace_id, trace_flags
 
 Runnable example: [examples/azure/main.go](examples/azure/main.go).
 
-Use `PresetAzure` for both the logger and access logger:
+Use `PresetAzure` for the logger, Huma request context, Huma access logger, and
+HTTP request context:
 
 ```go
 logger, err := obs.NewLogger(obs.LoggerConfig{
@@ -386,7 +493,10 @@ logger = logger.With(
 	zap.String("azure_resource_group", os.Getenv("AZURE_RESOURCE_GROUP")),
 )
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetAzure,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetAzure,
@@ -462,19 +572,21 @@ Use this checklist for each service adopting the package:
    - GCP: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`.
    - AWS: `AWS_REGION`.
    - Azure: `AZURE_REGION`, `AZURE_RESOURCE_GROUP`.
-4. Install middleware in order:
+4. Install Huma middleware in order:
    - `RequestContext(...)`
    - `AccessLogger(...)`
-5. Confirm the runtime writes JSON logs to stdout.
-6. Confirm the platform routes stdout/stderr to the expected log destination.
-7. Send a request with `X-Request-Id: demo-123`.
-8. Query the log destination for `request_id=demo-123`.
-9. Send a request with a valid W3C `traceparent` header.
-10. Confirm `correlation_id` becomes the W3C trace ID.
-11. For GCP, confirm `logging.googleapis.com/trace` uses the raw W3C trace ID.
-12. For AWS, confirm `xray_trace_id` appears when W3C trace context is present.
-13. For Azure, confirm `operation_Id` appears when W3C trace context is present.
-14. Build alerts and dashboards on stable fields, not message text.
+5. For mixed services, wrap the outer HTTP handler with
+   `HTTPRequestContext(...)`.
+6. Confirm the runtime writes JSON logs to stdout.
+7. Confirm the platform routes stdout/stderr to the expected log destination.
+8. Send a request with `X-Request-Id: demo-123`.
+9. Query the log destination for `request_id=demo-123`.
+10. Send a request with a valid W3C `traceparent` header.
+11. Confirm `correlation_id` becomes the W3C trace ID.
+12. For GCP, confirm `logging.googleapis.com/trace` uses the raw W3C trace ID.
+13. For AWS, confirm `xray_trace_id` appears when W3C trace context is present.
+14. For Azure, confirm `operation_Id` appears when W3C trace context is present.
+15. Build alerts and dashboards on stable fields, not message text.
 
 ## Optional Local Wrapper
 
@@ -521,5 +633,7 @@ See [examples/local-wrapper/applog/log.go](examples/local-wrapper/applog/log.go)
   https://learn.microsoft.com/en-us/azure/container-apps/environment-variables
 - Azure Application Insights W3C correlation mapping:
   https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
+- Azure Application Insights telemetry data model:
+  https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete
 - OpenTelemetry `otelhttp`:
   https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp

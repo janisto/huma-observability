@@ -97,6 +97,50 @@ func TestAccessLoggerIntegrationLogsAccessAndHandlerLines(t *testing.T) {
 	assertAccessField(t, access, "tenant_id", "tenant-1")
 }
 
+func TestAccessLoggerUsesInstalledRequestLoggerBeforeConfigLogger(t *testing.T) {
+	t.Parallel()
+
+	var requestBuffer bytes.Buffer
+	requestLogger, err := NewLogger(LoggerConfig{Writer: &requestBuffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	var fallbackBuffer bytes.Buffer
+	fallbackLogger, err := NewLogger(LoggerConfig{Writer: &fallbackBuffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+		defaultRequestIDHeader: "req-installed-logger",
+	})
+
+	RequestContext(RequestContextConfig{
+		Logger: requestLogger.With(zap.String("logger_source", "request-context")),
+	})(ctx, func(ctx huma.Context) {
+		AccessLogger(AccessLoggerConfig{
+			Logger: fallbackLogger.With(zap.String("logger_source", "access-config")),
+			Now: fixedClock(
+				time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC),
+				time.Date(2026, 7, 7, 12, 0, 0, int(5*time.Millisecond), time.UTC),
+			),
+		})(ctx, func(ctx huma.Context) {
+			Logger(ctx.Context()).Info("handler log")
+		})
+	})
+
+	lines := decodeLogLines(t, requestBuffer.String())
+	if len(lines) != 2 {
+		t.Fatalf("request logger line count = %d, want 2; lines=%#v", len(lines), lines)
+	}
+	for _, entry := range lines {
+		assertAccessField(t, entry, "logger_source", "request-context")
+		assertAccessField(t, entry, "request_id", "req-installed-logger")
+	}
+	if got := strings.TrimSpace(fallbackBuffer.String()); got != "" {
+		t.Fatalf("AccessLoggerConfig logger was used despite installed request logger: %s", got)
+	}
+}
+
 func TestAccessLoggerStatusLevelsAndCustomLeveler(t *testing.T) {
 	t.Parallel()
 

@@ -1,29 +1,35 @@
 # huma-observability
 
-`huma-observability` provides request correlation and structured Zap access
-logging middleware for [Huma](https://github.com/danielgtaylor/huma) APIs.
+`huma-observability` provides request correlation, request-scoped Zap loggers,
+and structured Zap access logging middleware for
+[Huma v2](https://github.com/danielgtaylor/huma) APIs. It also provides a small
+standard `net/http` request-context middleware for services that have non-Huma
+routes.
 
 The module path is `github.com/janisto/huma-observability`; the declared Go
 package name is `obs`.
 
 This is not official Huma framework middleware. It is a small, opinionated
 package for services that want the same production logging contract without
-copying middleware into every application.
+copying request middleware into every application.
 
 ## When To Use It
 
-Use this package when your Huma service needs:
+Use this package when your Huma v2 service needs:
 
 - Request IDs with validation, generation, response propagation, and context
   accessors.
 - Request-scoped `*zap.Logger` values available through `obs.Logger(ctx)`.
 - JSON access logs from Huma middleware, independent of the HTTP router.
+- Router-wide request metadata for health checks, readiness probes, redirects,
+  static handlers, 404/405 handlers, and recovery middleware.
 - W3C `traceparent` parsing for trace-level log correlation.
 - Cloud-oriented log fields for Google Cloud Logging, AWS CloudWatch/X-Ray
   query paths, or Azure Monitor/Application Insights ingestion.
 
 Do not use this package as a tracing system. It does not create spans, export
-metrics, configure OpenTelemetry, or create AWS X-Ray segments.
+metrics, configure OpenTelemetry, create AWS X-Ray segments, or emit generic
+`net/http` access logs.
 
 ## Requirements
 
@@ -41,10 +47,11 @@ compatibility promise yet.
 go get github.com/janisto/huma-observability
 ```
 
-Import it explicitly as `obs` in examples and application code:
+Import the module path normally. The package name is `obs`, so application code
+uses the `obs` identifier:
 
 ```go
-import obs "github.com/janisto/huma-observability"
+import "github.com/janisto/huma-observability"
 ```
 
 ## Quick Start
@@ -58,7 +65,7 @@ package main
 import (
 	"github.com/danielgtaylor/huma/v2"
 
-	obs "github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability"
 )
 
 func setup(api huma.API) error {
@@ -69,7 +76,9 @@ func setup(api huma.API) error {
 		return err
 	}
 
-	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+		Logger: logger,
+	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 		Logger: logger,
 	}))
@@ -79,8 +88,33 @@ func setup(api huma.API) error {
 ```
 
 Middleware order is part of the contract: install `RequestContext` before
-`AccessLogger`. That gives handlers and lower-level services access to request
-metadata and the request-scoped logger.
+`AccessLogger`. `RequestContext` installs request metadata and the
+request-scoped logger; `AccessLogger` writes the Huma operation-aware access
+log.
+
+## HTTP Request Context
+
+For services with both Huma and non-Huma routes, install `HTTPRequestContext` at
+the outer router boundary:
+
+```go
+handler := obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetDefault,
+})(router)
+```
+
+`HTTPRequestContext` installs request IDs, trace correlation metadata, and
+response request ID headers for every HTTP request. When `Logger` is
+configured, it also installs the request-scoped logger. Huma `RequestContext`
+reuses that metadata when a request reaches a Huma route, so one inbound
+request keeps one request ID across both layers.
+
+`HTTPRequestContext` does not emit access logs and does not wrap
+`http.ResponseWriter`. Non-Huma access logs are application-owned or
+router-owned. Huma routes should use `AccessLogger` for operation-aware access
+logs with `path_template` and `operation_id`. See [EXAMPLES.md](EXAMPLES.md)
+for plain `net/http` handler logging and a Chi route-group access logger.
 
 ## Handler Logging
 
@@ -96,8 +130,17 @@ func GetRepository(ctx context.Context, owner, repo string) error {
 }
 ```
 
-`Logger(ctx)` never returns nil. If no request logger has been installed, it
-returns a no-op logger.
+`Logger(ctx)` never returns nil. Configure `RequestContextConfig.Logger` for
+Huma-only services, or `HTTPRequestContextConfig.Logger` at the router boundary
+for mixed Huma and non-Huma services. If a context did not pass through
+configured request-context middleware, `Logger(ctx)` returns a no-op logger
+instead of using a package-global logger or implicit stdout fallback.
+
+Recovery middleware that logs with `Logger(r.Context())` must run after
+`HTTPRequestContext` if it needs request metadata. Logs emitted before
+request-context middleware may not have `request_id`; that means the request did
+not cross the package boundary yet, the middleware order is wrong, or the log is
+intentionally outside an HTTP request.
 
 ## Trace Correlation
 
@@ -131,7 +174,8 @@ global tracer providers.
 
 ## Cloud Presets
 
-Use the same preset for `NewLogger` and `AccessLogger`.
+Use the same preset for `NewLogger`, `RequestContext`, `AccessLogger`, and
+`HTTPRequestContext` when those pieces are used together.
 
 ### Google Cloud
 
@@ -143,7 +187,10 @@ if err != nil {
 	return err
 }
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetGCP,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetGCP,
@@ -153,7 +200,7 @@ api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 The GCP preset emits Cloud Logging-friendly JSON:
 
 - `severity` instead of `level`.
-- `httpRequest` for access logs.
+- `httpRequest` for Huma access logs.
 - `logging.googleapis.com/trace` with the raw W3C `TRACE_ID`.
 - `logging.googleapis.com/trace_sampled` from the W3C sampled flag.
 
@@ -171,7 +218,10 @@ if err != nil {
 	return err
 }
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetAWS,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetAWS,
@@ -200,7 +250,10 @@ if err != nil {
 	return err
 }
 
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger,
+	Preset: obs.PresetAzure,
+}))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 	Logger: logger,
 	Preset: obs.PresetAzure,
@@ -241,7 +294,7 @@ Provider-specific fields:
 | AWS | `xray_trace_id` |
 | Azure | `operation_Id`, `operation_ParentId` |
 
-Access log fields:
+Huma access log fields:
 
 - `method`
 - `path`
@@ -251,19 +304,20 @@ Access log fields:
 - `duration_ms`
 - `remote_ip`
 - `user_agent`
+- `httpRequest` for GCP
 
 Logger keys:
 
 - Generic, AWS, Azure: `timestamp`, `level`, `message`, optional `logger`.
 - GCP: `timestamp`, `severity`, `message`, optional `logger`.
 
-`AccessLoggerConfig.ExtraFields` may add application-specific fields to the
-access log. Fields using package-owned or provider-reserved keys are ignored to
+`AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
+access logs. Fields using package-owned or provider-reserved keys are ignored to
 avoid duplicate core keys in the JSON output.
 
 ## Request IDs
 
-Default request context behavior:
+Default `RequestContext` and `HTTPRequestContext` behavior:
 
 - Request ID header: `X-Request-Id`.
 - Trace header: `traceparent`.
@@ -279,6 +333,10 @@ W3C trace ID when a valid `traceparent` exists, otherwise the request ID.
 
 Set `DisableResponseHeader` when an upstream gateway owns request ID response
 headers and the application should not write one.
+
+Use `RequestContextConfig` for Huma routes and `HTTPRequestContextConfig` for
+router-wide HTTP middleware when you need custom request ID or trace header
+names.
 
 ## Logger Configuration
 
@@ -296,9 +354,9 @@ Useful options:
 
 ## Panic Behavior
 
-`AccessLogger` logs a `500` access log when downstream middleware or handlers
-panic, then re-panics. It does not recover the request or hide the panic from
-upstream recovery middleware.
+`AccessLogger` logs a `500` access log when downstream Huma middleware or
+handlers panic, then re-panics. It does not recover the request or hide the
+panic from upstream recovery middleware.
 
 ## Optional Local Wrapper
 
@@ -334,8 +392,15 @@ test -z "$(gofmt -l .)"
 
 - Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
   trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
+- Google Cloud structured logging documents special JSON fields such as
+  `severity`, `httpRequest`, `logging.googleapis.com/trace`, and
+  `logging.googleapis.com/trace_sampled`:
+  https://docs.cloud.google.com/logging/docs/structured-logging
 - AWS X-Ray documents W3C trace IDs formatted as X-Ray trace IDs:
   https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html
+- Azure Application Insights documents telemetry correlation fields including
+  `operation_Id` and `operation_ParentId`:
+  https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete
 - Azure Application Insights documents W3C Trace Context mapping to
   `Operation_Id` and `Operation_ParentId`:
   https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration

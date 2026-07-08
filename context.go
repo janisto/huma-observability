@@ -38,6 +38,9 @@ type RequestContextConfig struct {
 	DisableResponseHeader bool
 	NewRequestID          func() string
 	ValidateRequestID     func(string) bool
+
+	Logger *zap.Logger
+	Preset Preset
 }
 
 // RequestContext returns Huma middleware that installs request-scoped
@@ -45,11 +48,23 @@ type RequestContextConfig struct {
 func RequestContext(config RequestContextConfig) func(huma.Context, func(huma.Context)) {
 	cfg := normalizeRequestContextConfig(config)
 	return func(ctx huma.Context, next func(huma.Context)) {
-		metadata := buildRequestMetadata(ctx, cfg)
+		metadata := metadataFromContext(ctx.Context())
+		if metadata == nil || metadata.RequestID == "" {
+			existing := metadata
+			metadata = buildRequestMetadata(ctx, cfg)
+			if existing != nil && existing.Logger != nil {
+				metadata.Logger = loggerWithMetadata(existing.Logger, metadata, cfg.Preset)
+			}
+			ctx = huma.WithValue(ctx, contextKey{}, metadata)
+		}
+		if cfg.Logger != nil && metadata.Logger == nil {
+			ctx = withRequestLogger(ctx, metadata, loggerWithMetadata(cfg.Logger, metadata, cfg.Preset))
+			metadata = metadataFromContext(ctx.Context())
+		}
 		if !cfg.DisableResponseHeader {
 			ctx.SetHeader(cfg.ResponseHeader, metadata.RequestID)
 		}
-		next(huma.WithValue(ctx, contextKey{}, metadata))
+		next(ctx)
 	}
 }
 
@@ -104,14 +119,26 @@ func normalizeRequestContextConfig(config RequestContextConfig) RequestContextCo
 }
 
 func buildRequestMetadata(ctx huma.Context, config RequestContextConfig) *requestMetadata {
-	requestID := ctx.Header(config.RequestIDHeader)
+	return buildRequestMetadataFromHeaders(
+		ctx.Header(config.RequestIDHeader),
+		ctx.Header(config.TraceparentHeader),
+		ctx.Header(config.TracestateHeader),
+		config,
+	)
+}
+
+func buildRequestMetadataFromHeaders(
+	requestID string,
+	traceparent string,
+	tracestate string,
+	config RequestContextConfig,
+) *requestMetadata {
 	if !config.ValidateRequestID(requestID) {
 		requestID = newValidRequestID(config.NewRequestID, config.ValidateRequestID)
 	}
 
-	trace, ok := ParseTraceparent(ctx.Header(config.TraceparentHeader))
+	trace, ok := ParseTraceparent(traceparent)
 	if ok {
-		tracestate := ctx.Header(config.TracestateHeader)
 		if len(tracestate) <= maxTracestateLen {
 			trace.Tracestate = tracestate
 		}
@@ -130,11 +157,15 @@ func buildRequestMetadata(ctx huma.Context, config RequestContextConfig) *reques
 }
 
 func ensureRequestMetadata(ctx huma.Context) (*requestMetadata, huma.Context) {
-	if metadata := metadataFromContext(ctx.Context()); metadata != nil {
+	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
 		return metadata, ctx
 	}
+	existing := metadataFromContext(ctx.Context())
 	config := normalizeRequestContextConfig(RequestContextConfig{})
 	metadata := buildRequestMetadata(ctx, config)
+	if existing != nil && existing.Logger != nil {
+		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, PresetDefault)
+	}
 	if !config.DisableResponseHeader {
 		ctx.SetHeader(config.ResponseHeader, metadata.RequestID)
 	}
@@ -142,12 +173,32 @@ func ensureRequestMetadata(ctx huma.Context) (*requestMetadata, huma.Context) {
 }
 
 func withRequestLogger(ctx huma.Context, metadata *requestMetadata, logger *zap.Logger) huma.Context {
+	return huma.WithContext(ctx, contextWithRequestLogger(ctx.Context(), metadata, logger))
+}
+
+func contextWithRequestMetadata(ctx context.Context, metadata *requestMetadata) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, contextKey{}, metadata)
+}
+
+func contextWithRequestLogger(ctx context.Context, metadata *requestMetadata, logger *zap.Logger) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = noopLogger
+	}
+	if metadata == nil {
+		metadata = metadataFromContext(ctx)
+	}
 	if metadata == nil {
 		metadata = &requestMetadata{}
 	}
 	next := *metadata
 	next.Logger = logger
-	return huma.WithValue(ctx, contextKey{}, &next)
+	return contextWithRequestMetadata(ctx, &next)
 }
 
 func metadataFromContext(ctx context.Context) *requestMetadata {

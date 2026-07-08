@@ -13,33 +13,40 @@ import (
 	"github.com/janisto/huma-observability"
 )
 
-func setup(api huma.API) error {
+func setup(api huma.API) (*zap.Logger, error) {
 	logger, err := obs.NewLogger(obs.LoggerConfig{
 		Preset: obs.PresetDefault,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	logger = logger.With(projectFields()...)
 
-	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{}))
+	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+		Logger: logger,
+	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 		Logger: logger,
 	}))
 
 	registerRoutes(api)
-	return nil
+	return logger, nil
 }
 
 func main() {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("Example API", "1.0.0"))
-	if err := setup(api); err != nil {
+	logger, err := setup(api)
+	if err != nil {
 		panic(err)
 	}
+	registerHTTPRoutes(mux)
+	handler := obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
+		Logger: logger,
+	})(mux)
 	server := &http.Server{
 		Addr:              ":" + envOrDefault("PORT", "8080"),
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	panic(server.ListenAndServe())
@@ -49,6 +56,19 @@ func registerRoutes(api huma.API) {
 	huma.Get(api, "/health", func(ctx context.Context, input *struct{}) (*healthOutput, error) {
 		obs.Logger(ctx).Info("health check")
 		return &healthOutput{Body: healthBody{OK: true}}, nil
+	})
+}
+
+func registerHTTPRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		w.WriteHeader(http.StatusNoContent)
+		obs.Logger(r.Context()).Info("readiness check",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.EscapedPath()),
+			zap.Int("status", http.StatusNoContent),
+			zap.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)),
+		)
 	})
 }
 
