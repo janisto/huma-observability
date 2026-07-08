@@ -37,7 +37,9 @@ func TestHelpersUseRequestScopedLoggerAndMetadata(t *testing.T) {
 		"traceparent":  "00-" + traceID + "-00f067aa0ba902b7-01",
 	})
 
-	obs.RequestContext(obs.RequestContextConfig{})(ctx, func(ctx huma.Context) {
+	obs.RequestContext(obs.RequestContextConfig{
+		Logger: logger,
+	})(ctx, func(ctx huma.Context) {
 		obs.AccessLogger(obs.AccessLoggerConfig{
 			Logger: logger,
 			Now: fixedWrapperClock(
