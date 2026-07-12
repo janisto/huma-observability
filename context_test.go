@@ -296,6 +296,29 @@ func TestRequestContextTraceCorrelation(t *testing.T) {
 	}
 }
 
+func TestRequestContextCombinesTracestateHeaders(t *testing.T) {
+	t.Parallel()
+
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
+	req.Header.Set("Traceparent", traceparent)
+	req.Header.Add("Tracestate", "vendor=value")
+	req.Header.Add("Tracestate", "other=value")
+	ctx := humatest.NewContext(
+		&huma.Operation{Method: http.MethodGet, Path: "/test", DefaultStatus: http.StatusOK},
+		req,
+		httptest.NewRecorder(),
+	)
+
+	var got TraceContext
+	RequestContext(RequestContextConfig{})(ctx, func(next huma.Context) {
+		got = Trace(next.Context())
+	})
+	if got.Tracestate != "vendor=value,other=value" {
+		t.Fatalf("tracestate = %q", got.Tracestate)
+	}
+}
+
 func TestRequestContextTracestateLengthBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -550,6 +573,26 @@ func TestHTTPRequestContextTraceAndCustomHeaders(t *testing.T) {
 	}
 	if got := recorder.Header().Get("X-Correlation-Response"); got != "custom-http" {
 		t.Fatalf("custom response header = %q", got)
+	}
+}
+
+func TestHTTPRequestContextCombinesTracestateHeaders(t *testing.T) {
+	t.Parallel()
+
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	var got TraceContext
+	handler := HTTPRequestContext(HTTPRequestContextConfig{})(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			got = Trace(r.Context())
+		},
+	))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/http", nil)
+	req.Header.Set("Traceparent", traceparent)
+	req.Header.Add("Tracestate", "vendor=value")
+	req.Header.Add("Tracestate", "other=value")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if got.Tracestate != "vendor=value,other=value" {
+		t.Fatalf("tracestate = %q", got.Tracestate)
 	}
 }
 

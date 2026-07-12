@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"sync/atomic"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -122,9 +123,19 @@ func buildRequestMetadata(ctx huma.Context, config RequestContextConfig) *reques
 	return buildRequestMetadataFromHeaders(
 		ctx.Header(config.RequestIDHeader),
 		ctx.Header(config.TraceparentHeader),
-		ctx.Header(config.TracestateHeader),
+		combinedHeaderValues(ctx, config.TracestateHeader),
 		config,
 	)
+}
+
+func combinedHeaderValues(ctx huma.Context, name string) string {
+	var values []string
+	ctx.EachHeader(func(headerName, value string) {
+		if strings.EqualFold(headerName, name) {
+			values = append(values, value)
+		}
+	})
+	return strings.Join(values, ",")
 }
 
 func buildRequestMetadataFromHeaders(
@@ -156,7 +167,7 @@ func buildRequestMetadataFromHeaders(
 	}
 }
 
-func ensureRequestMetadata(ctx huma.Context) (*requestMetadata, huma.Context) {
+func ensureRequestMetadata(ctx huma.Context, preset Preset) (*requestMetadata, huma.Context) {
 	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
 		return metadata, ctx
 	}
@@ -164,7 +175,7 @@ func ensureRequestMetadata(ctx huma.Context) (*requestMetadata, huma.Context) {
 	config := normalizeRequestContextConfig(RequestContextConfig{})
 	metadata := buildRequestMetadata(ctx, config)
 	if existing != nil && existing.Logger != nil {
-		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, PresetDefault)
+		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, preset)
 	}
 	if !config.DisableResponseHeader {
 		ctx.SetHeader(config.ResponseHeader, metadata.RequestID)
