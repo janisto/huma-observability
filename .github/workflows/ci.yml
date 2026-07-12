@@ -4,11 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
