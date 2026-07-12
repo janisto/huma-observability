@@ -2,6 +2,7 @@ package obs
 
 import (
 	"net/http"
+	"strings"
 
 	"go.uber.org/zap"
 )
@@ -76,7 +77,7 @@ func buildRequestMetadataFromHTTPHeader(header http.Header, config RequestContex
 	return buildRequestMetadataFromHeaders(
 		header.Get(config.RequestIDHeader),
 		header.Get(config.TraceparentHeader),
-		header.Get(config.TracestateHeader),
+		strings.Join(header.Values(config.TracestateHeader), ","),
 		config,
 	)
 }

@@ -149,6 +149,10 @@ the header is valid, the W3C trace ID becomes the request `correlation_id` and
 provider-specific trace field source. When the header is missing or invalid,
 `correlation_id` falls back to `request_id`.
 
+Multiple `tracestate` header fields are combined in wire order as required by
+W3C Trace Context. The combined value is retained only when it is at most 512
+bytes.
+
 This means every log line gets a stable grouping key:
 
 - With valid W3C trace context: group by `correlation_id=<trace-id>`.
@@ -392,6 +396,8 @@ test -z "$(gofmt -l .)"
 
 - Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
   trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
+- Google Cloud changed raw `TRACE_ID` to the preferred `LogEntry.trace` format
+  in January 2026: https://docs.cloud.google.com/trace/docs/release-notes
 - Google Cloud structured logging documents special JSON fields such as
   `severity`, `httpRequest`, `logging.googleapis.com/trace`, and
   `logging.googleapis.com/trace_sampled`:

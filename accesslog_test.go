@@ -1031,6 +1031,42 @@ func TestAccessLoggerUsesDefaultMetadataWhenRequestContextIsMissing(t *testing.T
 	}
 }
 
+func TestAccessLoggerFallbackMetadataUsesConfiguredProvider(t *testing.T) {
+	t.Parallel()
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Preset: PresetGCP, Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	req := httptest.NewRequestWithContext(
+		contextWithRequestLogger(context.Background(), nil, logger),
+		http.MethodGet,
+		"/test",
+		nil,
+	)
+	req.Header.Set("Traceparent", "00-"+traceID+"-00f067aa0ba902b7-01")
+	ctx := humatest.NewContext(
+		&huma.Operation{Method: http.MethodGet, Path: "/test", DefaultStatus: http.StatusOK},
+		req,
+		httptest.NewRecorder(),
+	)
+
+	AccessLogger(AccessLoggerConfig{Preset: PresetGCP})(ctx, func(next huma.Context) {
+		Logger(next.Context()).Info("handler")
+	})
+	entries := decodeLogLines(t, buffer.String())
+	if len(entries) != 2 {
+		t.Fatalf("log entries = %d, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if got := entry["logging.googleapis.com/trace"]; got != traceID {
+			t.Fatalf("GCP trace = %v, want %q; entry=%#v", got, traceID, entry)
+		}
+	}
+}
+
 func TestRequestURLUsesHTTPSWhenTLSIsPresent(t *testing.T) {
 	t.Parallel()
 

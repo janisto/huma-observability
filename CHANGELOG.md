@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Combine multiple W3C `tracestate` header fields in wire order for both Huma
+  and standard `net/http` request-context middleware.
+- Preserve the configured cloud preset when access logging completes partial
+  internal request metadata.
+
+### Changed
+
+- Run CI on the latest patched Go 1.25 toolchain.
+
 ## v0.2.0 - 2026-07-08
 
 ### Added

@@ -615,6 +615,8 @@ See [examples/local-wrapper/applog/log.go](examples/local-wrapper/applog/log.go)
 
 - Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
   trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
+- Google Cloud changed raw `TRACE_ID` to the preferred `LogEntry.trace` format
+  in January 2026: https://docs.cloud.google.com/trace/docs/release-notes
 - Google Cloud structured logging recognizes special JSON fields:
   https://docs.cloud.google.com/logging/docs/structured-logging
 - Cloud Run environment variables:

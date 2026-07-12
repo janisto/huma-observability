@@ -32,7 +32,7 @@ func AccessLogger(config AccessLoggerConfig) func(huma.Context, func(huma.Contex
 	cfg := normalizeAccessLoggerConfig(config)
 	return func(ctx huma.Context, next func(huma.Context)) {
 		start := cfg.Now()
-		metadata, ctx := ensureRequestMetadata(ctx)
+		metadata, ctx := ensureRequestMetadata(ctx, cfg.Preset)
 
 		logger := metadata.Logger
 		if logger == nil {
