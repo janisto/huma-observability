@@ -1,0 +1,183 @@
+name: Bug report
+description: Report reproducible incorrect behavior in huma-observability
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve `huma-observability`.
+
+        Before filing, search the existing issues and check the README and examples. Please reduce the problem to the smallest reproduction you can share. Prefer copied text over screenshots, and remove credentials, tokens, personal data, and other sensitive production information.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I searched the existing issues and did not find a matching report.
+          required: true
+        - label: I reviewed the README and examples relevant to this behavior.
+          required: true
+        - label: I removed secrets and sensitive data from everything I am submitting.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Select the closest match.
+      options:
+        - RequestContext middleware
+        - HTTPRequestContext middleware
+        - AccessLogger middleware
+        - Request-scoped logger or context accessors
+        - Request ID or correlation behavior
+        - Trace context parsing or propagation
+        - Cloud preset or log field formatting
+        - Huma operation or middleware integration
+        - Documentation or examples
+        - Other or uncertain
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: Describe exactly what happened, including the full error or incorrect output when available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: Describe what should have happened and why the current behavior is incorrect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps or evidence
+      description: Provide exact steps and the smallest runnable program or test that reproduces the problem. If it is not reproducible, describe the original conditions and provide the strongest concrete evidence available. A link to a minimal public repository is also useful.
+      placeholder: |
+        1. Configure the middleware with ...
+        2. Send this request or run this test ...
+        3. Observe ...
+
+        Minimal code, evidence, or a link to it:
+    validations:
+      required: true
+
+  - type: input
+    id: package-version
+    attributes:
+      label: Affected huma-observability version or commit
+      description: Paste the output of `go list -m github.com/janisto/huma-observability`, or provide the exact commit ID for an unreleased revision.
+      placeholder: "Example: github.com/janisto/huma-observability v0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: framework-version
+    attributes:
+      label: Affected Huma version
+      description: Paste the output of `go list -m github.com/danielgtaylor/huma/v2`.
+      placeholder: "Example: github.com/danielgtaylor/huma/v2 v2.38.0"
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Paste the output of `go version`.
+      placeholder: "Example: go version go1.25.0 linux/amd64"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      description: Include the values from `go env GOOS GOARCH CGO_ENABLED`.
+      placeholder: "Example: GOOS=linux GOARCH=amd64 CGO_ENABLED=0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: runtime-details
+    attributes:
+      label: Deployment and runtime details
+      description: Optional. Include relevant container image, serverless runtime, cloud provider, proxy, architecture emulation, or unusual framework configuration.
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options:
+        - Every time
+        - Intermittently
+        - Happened once
+        - Unable to reproduce independently
+    validations:
+      required: true
+
+  - type: input
+    id: regression
+    attributes:
+      label: Last known working version
+      description: If this is a regression, provide the most recent package version or commit where the behavior worked.
+      placeholder: "Example: v0.3.0 or commit abc1234"
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Logs, stack traces, or other diagnostics
+      description: Paste relevant, redacted text. Include timestamps, request IDs, and correlated log lines when they help demonstrate the problem.
+      render: shell
+
+  - type: upload
+    id: diagnostic-files
+    attributes:
+      label: Diagnostic files
+      description: Optionally attach redacted logs, JSON output, traces, or a minimal archive. Review every file for sensitive data first.
+    validations:
+      required: false
+      accept: ".log,.txt,.json,.zip,.gz,.tar.gz"
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and scope
+      description: Describe who or what is affected, production impact, and any workaround currently in use.
+
+  - type: textarea
+    id: investigation
+    attributes:
+      label: Investigation performed
+      description: Share tests, commands, suspected cause, ruled-out explanations, or relevant source locations so maintainers do not repeat work.
+
+  - type: textarea
+    id: ai-assistance
+    attributes:
+      label: Agent or AI assistance
+      description: Optional. If an AI agent helped discover, reproduce, analyze, or write this report, include its surface, model and provider, reasoning or effort setting, agent or tool version, contribution, verification, and human review status. Use unknown when an exact value is unavailable. Do not include private prompts or transcripts.
+      placeholder: |
+        Agent or surface: Codex desktop
+        Model and provider: OpenAI GPT-5.6 Sol
+        Reasoning or effort: medium
+        Agent or tool version:
+        Contribution: reproduced, minimized, analyzed, or drafted the report
+        Verification: commands run and evidence checked
+        Human review: performed or not performed
+        Public transcript, run, or pull request:
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add any other information or links that may help verify and resolve the issue.
