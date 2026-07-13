@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -13,84 +12,27 @@ import (
 	"github.com/janisto/huma-observability"
 )
 
-func setup(api huma.API) (*zap.Logger, error) {
-	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset: obs.PresetGCP,
-	})
-	if err != nil {
-		return nil, err
-	}
-	logger = logger.With(projectFields()...)
-
-	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
-	}))
-	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
-	}))
-
-	registerRoutes(api)
-	return logger, nil
-}
-
 func main() {
-	mux := http.NewServeMux()
-	api := humago.New(mux, huma.DefaultConfig("Example API", "1.0.0"))
-	logger, err := setup(api)
+	logger, err := obs.NewLogger(obs.LoggerConfig{Preset: obs.PresetGCP})
 	if err != nil {
 		panic(err)
 	}
-	registerHTTPRoutes(mux)
-	handler := obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
-	})(mux)
-	server := &http.Server{
-		Addr:              ":" + envOrDefault("PORT", "8080"),
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	panic(server.ListenAndServe())
-}
 
-func registerRoutes(api huma.API) {
-	huma.Get(api, "/health", func(ctx context.Context, input *struct{}) (*healthOutput, error) {
-		obs.Logger(ctx).Info("health check")
-		return &healthOutput{Body: healthBody{OK: true}}, nil
-	})
-}
+	mux := http.NewServeMux()
+	api := humago.New(mux, huma.DefaultConfig("Example API", "1.0.0"))
+	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{Logger: logger, Preset: obs.PresetGCP}))
+	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{Logger: logger, Preset: obs.PresetGCP}))
+	huma.Get(api, "/health", health)
 
-func registerHTTPRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		w.WriteHeader(http.StatusNoContent)
-		obs.Logger(r.Context()).Info("readiness check",
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.EscapedPath()),
-			zap.Int("status", http.StatusNoContent),
-			zap.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)),
-		)
-	})
-}
-
-func projectFields() []zap.Field {
-	return []zap.Field{
-		zap.String("service", envOrDefault("SERVICE_NAME", "example-api")),
-		zap.String("environment", envOrDefault("SERVICE_ENV", "local")),
-		zap.String("version", envOrDefault("SERVICE_VERSION", "dev")),
-		zap.String("cloud_provider", "gcp"),
-		zap.String("cloud_project", os.Getenv("GOOGLE_CLOUD_PROJECT")),
-		zap.String("cloud_location", os.Getenv("GOOGLE_CLOUD_LOCATION")),
+	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := server.ListenAndServe(); err != nil {
+		logger.Error("server stopped", zap.Error(err))
 	}
 }
 
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+func health(ctx context.Context, _ *struct{}) (*healthOutput, error) {
+	obs.Logger(ctx).Info("health check")
+	return &healthOutput{Body: healthBody{OK: true}}, nil
 }
 
 type healthOutput struct {

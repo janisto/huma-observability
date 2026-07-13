@@ -56,8 +56,9 @@ import "github.com/janisto/huma-observability"
 
 ## Quick Start
 
-More complete runnable examples, including per-cloud deployment notes, are in
-[EXAMPLES.md](EXAMPLES.md).
+When this documentation shows one configuration, it uses GCP. Complete
+runnable GCP, provider-neutral, AWS, and Azure applications are available in
+[`examples`](examples), with usage notes in [EXAMPLES.md](EXAMPLES.md).
 
 ```go
 package main
@@ -70,7 +71,7 @@ import (
 
 func setup(api huma.API) error {
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset: obs.PresetDefault,
+		Preset: obs.PresetGCP,
 	})
 	if err != nil {
 		return err
@@ -78,9 +79,11 @@ func setup(api huma.API) error {
 
 	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
 		Logger: logger,
+		Preset: obs.PresetGCP,
 	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 		Logger: logger,
+		Preset: obs.PresetGCP,
 	}))
 
 	return nil
@@ -100,7 +103,7 @@ the outer router boundary:
 ```go
 handler := obs.HTTPRequestContext(obs.HTTPRequestContextConfig{
 	Logger: logger,
-	Preset: obs.PresetDefault,
+	Preset: obs.PresetGCP,
 })(router)
 ```
 
@@ -113,8 +116,7 @@ request keeps one request ID across both layers.
 `HTTPRequestContext` does not emit access logs and does not wrap
 `http.ResponseWriter`. Non-Huma access logs are application-owned or
 router-owned. Huma routes should use `AccessLogger` for operation-aware access
-logs with `path_template` and `operation_id`. See [EXAMPLES.md](EXAMPLES.md)
-for plain `net/http` handler logging and a Chi route-group access logger.
+logs with `path_template` and `operation_id`.
 
 ## Handler Logging
 
@@ -214,24 +216,6 @@ parent ID is not the same semantic value.
 
 ### AWS
 
-```go
-logger, err := obs.NewLogger(obs.LoggerConfig{
-	Preset: obs.PresetAWS,
-})
-if err != nil {
-	return err
-}
-
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
-	Logger: logger,
-	Preset: obs.PresetAWS,
-}))
-api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger: logger,
-	Preset: obs.PresetAWS,
-}))
-```
-
 The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
 `message`. With a valid W3C `traceparent`, it also emits:
 
@@ -245,24 +229,6 @@ The middleware does not create AWS X-Ray segments and does not emit `span_id`
 from an incoming W3C parent ID.
 
 ### Azure
-
-```go
-logger, err := obs.NewLogger(obs.LoggerConfig{
-	Preset: obs.PresetAzure,
-})
-if err != nil {
-	return err
-}
-
-api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
-	Logger: logger,
-	Preset: obs.PresetAzure,
-}))
-api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger: logger,
-	Preset: obs.PresetAzure,
-}))
-```
 
 The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
 `message`. With a valid W3C `traceparent`, it emits:
