@@ -1,12 +1,17 @@
 package obs
 
 import (
+	"encoding/hex"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestParseTraceparentValid(t *testing.T) {
 	t.Parallel()
+
+	futureVersion := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	maxLengthFutureVersion := futureVersion + "-" + strings.Repeat("a", maxTraceparentLen-len(futureVersion)-1)
 
 	tests := []struct {
 		name    string
@@ -36,6 +41,11 @@ func TestParseTraceparentValid(t *testing.T) {
 		{
 			name:    "future version with extension",
 			value:   "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra",
+			sampled: true,
+		},
+		{
+			name:    "future version at maximum accepted length",
+			value:   maxLengthFutureVersion,
 			sampled: true,
 		},
 	}
@@ -74,6 +84,8 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 
 	valid := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	futureVersion := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	overlongFutureVersion := futureVersion + "-" + strings.Repeat("a", maxTraceparentLen-len(futureVersion))
 	tests := []struct {
 		name  string
 		value string
@@ -85,7 +97,7 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 		{name: "invalid version", value: "0g-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 		{name: "forbidden version ff", value: "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 		{name: "too short", value: valid[:len(valid)-1]},
-		{name: "too long", value: valid + "-" + strings.Repeat("a", maxTraceparentLen)},
+		{name: "future version over maximum length", value: overlongFutureVersion},
 		{name: "all-zero trace id", value: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"},
 		{name: "all-zero parent id", value: "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"},
 		{name: "invalid first separator", value: "00_4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
@@ -107,6 +119,9 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 			if ok {
 				t.Fatalf("ParseTraceparent(%q) accepted invalid value: %#v", tt.value, trace)
 			}
+			if trace != (TraceContext{}) {
+				t.Fatalf("ParseTraceparent(%q) returned partial data for invalid input: %#v", tt.value, trace)
+			}
 		})
 	}
 }
@@ -125,14 +140,47 @@ func FuzzParseTraceparent(f *testing.F) {
 		if !trace.Valid {
 			t.Fatal("accepted trace has Valid=false")
 		}
-		if len(trace.TraceID) != 32 {
-			t.Fatalf("TraceID length = %d", len(trace.TraceID))
+		if trace.Traceparent != value {
+			t.Fatalf("Traceparent = %q, want accepted input %q", trace.Traceparent, value)
 		}
-		if len(trace.ParentID) != 16 {
-			t.Fatalf("ParentID length = %d", len(trace.ParentID))
+		assertLowerHexBytes(t, "TraceID", trace.TraceID, 16)
+		assertLowerHexBytes(t, "ParentID", trace.ParentID, 8)
+		assertLowerHexBytes(t, "Flags", trace.Flags, 1)
+		if strings.Trim(trace.TraceID, "0") == "" {
+			t.Fatal("accepted trace has all-zero TraceID")
 		}
-		if len(trace.Flags) != 2 {
-			t.Fatalf("Flags length = %d", len(trace.Flags))
+		if strings.Trim(trace.ParentID, "0") == "" {
+			t.Fatal("accepted trace has all-zero ParentID")
+		}
+		flags, err := strconv.ParseUint(trace.Flags, 16, 8)
+		if err != nil {
+			t.Fatalf("accepted flags %q are not one hexadecimal byte: %v", trace.Flags, err)
+		}
+		if wantSampled := flags&1 == 1; trace.Sampled != wantSampled {
+			t.Fatalf("Sampled = %v, want %v for flags %q", trace.Sampled, wantSampled, trace.Flags)
+		}
+
+		version := value[:2]
+		assertLowerHexBytes(t, "version", version, 1)
+		if version == "ff" {
+			t.Fatal("accepted forbidden version ff")
+		}
+		if version == "00" && len(value) != traceparentLen {
+			t.Fatalf("accepted version 00 length = %d, want %d", len(value), traceparentLen)
+		}
+		if version != "00" && len(value) > traceparentLen && value[traceparentLen] != '-' {
+			t.Fatalf("accepted future version without extension separator: %q", value)
 		}
 	})
+}
+
+func assertLowerHexBytes(t *testing.T, name, value string, wantBytes int) {
+	t.Helper()
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		t.Fatalf("%s = %q, want lowercase hexadecimal: %v", name, value, err)
+	}
+	if len(decoded) != wantBytes || value != strings.ToLower(value) {
+		t.Fatalf("%s = %q, want %d lowercase hexadecimal bytes", name, value, wantBytes)
+	}
 }
