@@ -2,11 +2,12 @@ package obs
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -43,8 +44,17 @@ func TestNewLoggerWritesPresetJSON(t *testing.T) {
 			logger.Info("hello", zap.String("component", "test"))
 			entry := decodeSingleLogLine(t, buffer.String())
 
-			if _, ok := entry["timestamp"].(string); !ok {
+			timestamp, ok := entry["timestamp"].(string)
+			if !ok {
 				t.Fatalf("timestamp missing or not string: %#v", entry["timestamp"])
+			}
+			parsedTimestamp, err := time.Parse(time.RFC3339Nano, timestamp)
+			if err != nil {
+				t.Fatalf("timestamp = %q, want RFC3339Nano: %v", timestamp, err)
+			}
+			_, offset := parsedTimestamp.Zone()
+			if offset != 0 || !strings.HasSuffix(timestamp, "Z") {
+				t.Fatalf("timestamp = %q, want UTC with Z suffix", timestamp)
 			}
 			if got := entry[tt.levelKey]; got != tt.levelValue {
 				t.Fatalf("%s = %v, want %q", tt.levelKey, got, tt.levelValue)
@@ -59,24 +69,154 @@ func TestNewLoggerWritesPresetJSON(t *testing.T) {
 				if _, ok := entry["level"]; ok {
 					t.Fatalf("GCP log unexpectedly included level key: %#v", entry)
 				}
+			} else if _, ok := entry["severity"]; ok {
+				t.Fatalf("%s log unexpectedly included GCP severity key: %#v", tt.name, entry)
 			}
 		})
 	}
 }
 
-func TestNewLoggerGCPWarnMapsToWarning(t *testing.T) {
+func TestNewLoggerGCPLevelMapping(t *testing.T) {
 	t.Parallel()
 
-	var buffer bytes.Buffer
-	logger, err := NewLogger(LoggerConfig{Preset: PresetGCP, Writer: &buffer})
+	tests := []struct {
+		name  string
+		level zapcore.Level
+		want  string
+	}{
+		{name: "debug", level: zapcore.DebugLevel, want: "DEBUG"},
+		{name: "info", level: zapcore.InfoLevel, want: "INFO"},
+		{name: "warn", level: zapcore.WarnLevel, want: "WARNING"},
+		{name: "error", level: zapcore.ErrorLevel, want: "ERROR"},
+		{name: "dpanic", level: zapcore.DPanicLevel, want: "CRITICAL"},
+		{name: "unknown level", level: zapcore.Level(99), want: "LEVEL(99)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buffer bytes.Buffer
+			logger, err := NewLogger(LoggerConfig{
+				Preset: PresetGCP,
+				Writer: &buffer,
+				Level:  zapcore.DebugLevel,
+			})
+			if err != nil {
+				t.Fatalf("NewLogger returned error: %v", err)
+			}
+			logger.Log(tt.level, "level")
+
+			entry := decodeSingleLogLine(t, buffer.String())
+			if got := entry["severity"]; got != tt.want {
+				t.Fatalf("severity = %v, want %s", got, tt.want)
+			}
+			if _, ok := entry["level"]; ok {
+				t.Fatalf("GCP log unexpectedly included generic level key: %#v", entry)
+			}
+		})
+	}
+}
+
+func TestGCPLevelEncoderMapsTerminalLevels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level zapcore.Level
+		want  string
+	}{
+		{name: "panic", level: zapcore.PanicLevel, want: "ALERT"},
+		{name: "fatal", level: zapcore.FatalLevel, want: "EMERGENCY"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			encoder := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+				LevelKey:    "severity",
+				MessageKey:  "message",
+				LineEnding:  zapcore.DefaultLineEnding,
+				EncodeLevel: gcpLevelEncoder,
+			})
+			encoded, err := encoder.EncodeEntry(zapcore.Entry{
+				Level:   tt.level,
+				Message: "terminal level",
+			}, nil)
+			if err != nil {
+				t.Fatalf("EncodeEntry returned error: %v", err)
+			}
+			output := encoded.String()
+			encoded.Free()
+
+			entry := decodeSingleLogLine(t, output)
+			if got := entry["severity"]; got != tt.want {
+				t.Fatalf("severity = %v, want %s", got, tt.want)
+			}
+			if got := entry["message"]; got != "terminal level" {
+				t.Fatalf("message = %v, want terminal level", got)
+			}
+		})
+	}
+}
+
+func TestNewLoggerReportsSinkFailuresToConfiguredErrorWriter(t *testing.T) {
+	t.Parallel()
+
+	sinkErr := errors.New("sink unavailable")
+	var errorOutput bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{
+		Writer:      failingLogWriter{err: sinkErr},
+		ErrorWriter: &errorOutput,
+	})
 	if err != nil {
 		t.Fatalf("NewLogger returned error: %v", err)
 	}
 
-	logger.Warn("warning")
-	entry := decodeSingleLogLine(t, buffer.String())
-	if got := entry["severity"]; got != "WARNING" {
-		t.Fatalf("severity = %v, want WARNING", got)
+	logger.Info("cannot persist")
+
+	got := errorOutput.String()
+	if !strings.Contains(got, "write error") || !strings.Contains(got, sinkErr.Error()) {
+		t.Fatalf("error output = %q, want Zap write failure containing %q", got, sinkErr)
+	}
+}
+
+func TestNewLoggerLocksErrorWriterForConcurrentSinkFailures(t *testing.T) {
+	t.Parallel()
+
+	sinkErr := errors.New("sink unavailable")
+	var errorOutput bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{
+		Writer:      failingLogWriter{err: sinkErr},
+		ErrorWriter: &errorOutput,
+	})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+
+	const goroutines = 8
+	const writesPerGoroutine = 25
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer waitGroup.Done()
+			for range writesPerGoroutine {
+				logger.Info("cannot persist")
+			}
+		}()
+	}
+	waitGroup.Wait()
+
+	lines := strings.Split(strings.TrimSpace(errorOutput.String()), "\n")
+	if got, want := len(lines), goroutines*writesPerGoroutine; got != want {
+		t.Fatalf("error line count = %d, want %d", got, want)
+	}
+	for index, line := range lines {
+		if !strings.Contains(line, "write error") || !strings.Contains(line, sinkErr.Error()) {
+			t.Fatalf("error line %d = %q, want Zap write failure containing %q", index, line, sinkErr)
+		}
 	}
 }
 
@@ -96,11 +236,65 @@ func TestNewLoggerWritesNamedLoggerField(t *testing.T) {
 	}
 }
 
+func TestNewLoggerAddCallerEmitsCallSite(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer, AddCaller: true})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+
+	logger.Info("caller-enabled")
+
+	entry := decodeSingleLogLine(t, buffer.String())
+	caller, ok := entry["caller"].(string)
+	if !ok || !strings.Contains(caller, "logger_test.go:") {
+		t.Fatalf("caller = %#v, want logger_test.go call site", entry["caller"])
+	}
+}
+
+func TestNewLoggerDevelopmentMakesDPanicObservable(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer, Development: true})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		logger.DPanic("development invariant failed")
+	}()
+
+	if recovered == nil {
+		t.Fatal("Development logger did not panic on DPanic")
+	}
+	entry := decodeSingleLogLine(t, buffer.String())
+	if got := entry["level"]; got != "DPANIC" {
+		t.Fatalf("level = %v, want DPANIC", got)
+	}
+	if got := entry["message"]; got != "development invariant failed" {
+		t.Fatalf("message = %v", got)
+	}
+}
+
 func TestNewLoggerRejectsUnknownPreset(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewLogger(LoggerConfig{Preset: Preset("bogus")}); err == nil {
+	logger, err := NewLogger(LoggerConfig{Preset: Preset("bogus")})
+	if err == nil {
 		t.Fatal("NewLogger accepted an unknown preset")
+	}
+	if logger != nil {
+		t.Fatalf("NewLogger returned partial logger for unknown preset: %#v", logger)
+	}
+	if got, want := err.Error(), "observability: unknown logger preset"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
@@ -131,95 +325,34 @@ func TestNewLoggerLocksWriterForConcurrentUse(t *testing.T) {
 	if got, want := len(lines), goroutines*writesPerGoroutine; got != want {
 		t.Fatalf("log line count = %d, want %d", got, want)
 	}
+	seen := make(map[[2]int]struct{}, goroutines*writesPerGoroutine)
 	for _, line := range lines {
 		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("concurrent log line is invalid JSON: %v\n%s", err, line)
 		}
+		if got := entry["message"]; got != "concurrent log" {
+			t.Fatalf("concurrent log message = %v, want concurrent log; entry=%#v", got, entry)
+		}
+		workerValue, workerOK := entry["worker"].(float64)
+		writeValue, writeOK := entry["write"].(float64)
+		worker := int(workerValue)
+		write := int(writeValue)
+		if !workerOK || !writeOK || workerValue != float64(worker) || writeValue != float64(write) ||
+			worker < 0 || worker >= goroutines || write < 0 || write >= writesPerGoroutine {
+			t.Fatalf(
+				"invalid concurrent log identity worker=%#v write=%#v; entry=%#v",
+				entry["worker"], entry["write"], entry,
+			)
+		}
+		identity := [2]int{worker, write}
+		if _, duplicate := seen[identity]; duplicate {
+			t.Fatalf("duplicate concurrent log identity worker=%d write=%d", worker, write)
+		}
+		seen[identity] = struct{}{}
 	}
-}
-
-func TestLoggerAccessorReturnsRequestLogger(t *testing.T) {
-	t.Parallel()
-
-	var buffer bytes.Buffer
-	base, err := NewLogger(LoggerConfig{
-		Writer: &buffer,
-		Level:  zapcore.DebugLevel,
-	})
-	if err != nil {
-		t.Fatalf("NewLogger returned error: %v", err)
-	}
-
-	metadata := &requestMetadata{
-		RequestID:     "req-1",
-		CorrelationID: "trace-1",
-		Logger:        base.With(zap.String("request_id", "req-1")),
-	}
-	ctx := context.WithValue(context.Background(), contextKey{}, metadata)
-	Logger(ctx).Debug("handler debug")
-
-	entry := decodeSingleLogLine(t, buffer.String())
-	if got := entry["request_id"]; got != "req-1" {
-		t.Fatalf("request_id = %v", got)
-	}
-	if got := entry["message"]; got != "handler debug" {
-		t.Fatalf("message = %v", got)
-	}
-}
-
-func TestRequestLoggerFieldsIncludeTraceOnlyWhenValid(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		trace         TraceContext
-		wantTraceKeys bool
-	}{
-		{name: "without trace", trace: TraceContext{}, wantTraceKeys: false},
-		{name: "with trace", trace: TraceContext{
-			TraceID:  "4bf92f3577b34da6a3ce929d0e0e4736",
-			ParentID: "00f067aa0ba902b7",
-			Flags:    "01",
-			Sampled:  true,
-			Valid:    true,
-		}, wantTraceKeys: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var buffer bytes.Buffer
-			base, err := NewLogger(LoggerConfig{Writer: &buffer})
-			if err != nil {
-				t.Fatalf("NewLogger returned error: %v", err)
-			}
-			metadata := &requestMetadata{
-				RequestID:     "req-1",
-				CorrelationID: "corr-1",
-				Trace:         tt.trace,
-			}
-
-			base.With(requestMetadataFields(metadata)...).Info("handler")
-			entry := decodeSingleLogLine(t, buffer.String())
-
-			if got := entry["request_id"]; got != "req-1" {
-				t.Fatalf("request_id = %v", got)
-			}
-			if got := entry["correlation_id"]; got != "corr-1" {
-				t.Fatalf("correlation_id = %v", got)
-			}
-			_, hasTraceID := entry["trace_id"]
-			if hasTraceID != tt.wantTraceKeys {
-				t.Fatalf("trace_id present = %v, want %v; entry=%#v", hasTraceID, tt.wantTraceKeys, entry)
-			}
-			if tt.wantTraceKeys {
-				if got := entry["trace_sampled"]; got != true {
-					t.Fatalf("trace_sampled = %v", got)
-				}
-			}
-		})
+	if got, want := len(seen), goroutines*writesPerGoroutine; got != want {
+		t.Fatalf("unique concurrent log identities = %d, want %d", got, want)
 	}
 }
 
@@ -234,4 +367,12 @@ func decodeSingleLogLine(t *testing.T, line string) map[string]any {
 		t.Fatalf("log line is not valid JSON: %v\n%s", err, line)
 	}
 	return entry
+}
+
+type failingLogWriter struct {
+	err error
+}
+
+func (w failingLogWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }

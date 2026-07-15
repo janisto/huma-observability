@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Added a repository-local adversarial testing skill and strengthened the test
+  suite with behavioral, boundary, failure-recovery, concurrency, and mutation
+  checks for request context, access logging, logger configuration, trace
+  parsing, provider schemas, and the local wrapper example. Runtime behavior
+  and the public API are unchanged.
+
 ## v0.3.0 - 2026-07-12
 
 ### Fixed

@@ -58,6 +58,22 @@ func TestHelpersUseRequestScopedLoggerAndMetadata(t *testing.T) {
 	})
 
 	logs := decodeWrapperLogLines(t, buffer.String())
+	wantMessages := []string{
+		"debug helper",
+		"info helper",
+		"warn helper",
+		"error helper",
+		"log helper",
+		"request completed",
+	}
+	if len(logs) != len(wantMessages) {
+		t.Fatalf("log line count = %d, want %d; logs=%#v", len(logs), len(wantMessages), logs)
+	}
+	for index, want := range wantMessages {
+		if got := logs[index]["message"]; got != want {
+			t.Fatalf("log %d message = %v, want %q; logs=%#v", index, got, want, logs)
+		}
+	}
 	assertWrapperLog(t, logs, "debug helper", "DEBUG", map[string]any{
 		"request_id":     "req-wrapper",
 		"correlation_id": traceID,
@@ -77,7 +93,8 @@ func TestHelpersUseRequestScopedLoggerAndMetadata(t *testing.T) {
 func TestWithErrorPrependsErrorWithoutMutatingFields(t *testing.T) {
 	t.Parallel()
 
-	fields := []zap.Field{zap.String("component", "worker")}
+	fields := make([]zap.Field, 1, 2)
+	fields[0] = zap.String("component", "worker")
 	got := withError(errors.New("boom"), fields)
 
 	if len(got) != 2 {
@@ -91,6 +108,11 @@ func TestWithErrorPrependsErrorWithoutMutatingFields(t *testing.T) {
 	}
 	if fields[0].Key != "component" {
 		t.Fatalf("input fields were mutated: %#v", fields)
+	}
+	for _, hidden := range fields[len(fields):cap(fields)] {
+		if hidden.Key != "" {
+			t.Fatalf("input fields backing array was mutated: %#v", hidden)
+		}
 	}
 
 	withoutErr := withError(nil, fields)

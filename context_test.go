@@ -3,9 +3,11 @@ package obs
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -22,10 +24,18 @@ func TestDefaultValidateRequestID(t *testing.T) {
 		want  bool
 	}{
 		{name: "letters digits punctuation", value: "abc-XYZ_123.~", want: true},
+		{name: "alphanumeric lower boundaries", value: "0Aa", want: true},
+		{name: "alphanumeric upper boundaries", value: "9Zz", want: true},
+		{name: "maximum length", value: strings.Repeat("a", 128), want: true},
 		{name: "empty", value: "", want: false},
 		{name: "overlong", value: strings.Repeat("a", 129), want: false},
 		{name: "space", value: "abc def", want: false},
 		{name: "slash", value: "abc/def", want: false},
+		{name: "after digit range", value: "abc:def", want: false},
+		{name: "before uppercase range", value: "abc@def", want: false},
+		{name: "after uppercase range", value: "abc[def", want: false},
+		{name: "before lowercase range", value: "abc`def", want: false},
+		{name: "after lowercase range", value: "abc{def", want: false},
 		{name: "non ascii", value: "å", want: false},
 	}
 
@@ -106,47 +116,339 @@ func TestRequestContextRequestIDLifecycle(t *testing.T) {
 	}
 }
 
+func TestRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		incoming      string
+		want          string
+		wantNewIDCall bool
+	}{
+		{
+			name:     "custom-valid incoming id is preserved",
+			incoming: "tenant:client",
+			want:     "tenant:client",
+		},
+		{
+			name:          "custom-invalid incoming id is replaced",
+			incoming:      "client-123",
+			want:          "tenant:generated",
+			wantNewIDCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, recorder := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+				defaultRequestIDHeader: tt.incoming,
+			})
+			newIDCalls := 0
+			RequestContext(RequestContextConfig{
+				NewRequestID: func() string {
+					newIDCalls++
+					return "tenant:generated"
+				},
+				ValidateRequestID: func(value string) bool {
+					return strings.HasPrefix(value, "tenant:")
+				},
+			})(ctx, func(next huma.Context) {
+				if got := RequestID(next.Context()); got != tt.want {
+					t.Fatalf("RequestID = %q, want %q", got, tt.want)
+				}
+			})
+
+			wantCalls := 0
+			if tt.wantNewIDCall {
+				wantCalls = 1
+			}
+			if newIDCalls != wantCalls {
+				t.Fatalf("NewRequestID calls = %d, want %d", newIDCalls, wantCalls)
+			}
+			if got := recorder.Header().Get(defaultRequestIDHeader); got != tt.want {
+				t.Fatalf("response request ID header = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
+	t.Parallel()
+
+	t.Run("second generated id is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		calls := 0
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+		var handlerRequestID string
+		RequestContext(RequestContextConfig{
+			NewRequestID: func() string {
+				calls++
+				if calls == 1 {
+					return "invalid value"
+				}
+				return "valid-on-retry"
+			},
+		})(ctx, func(next huma.Context) {
+			handlerRequestID = RequestID(next.Context())
+		})
+
+		if calls != 2 {
+			t.Fatalf("NewRequestID calls = %d, want 2", calls)
+		}
+		assertRequestIDSurfaces(t, handlerRequestID, "valid-on-retry", recorder)
+	})
+
+	t.Run("two invalid generated ids use safe fallback", func(t *testing.T) {
+		t.Parallel()
+
+		calls := 0
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+		var handlerRequestID string
+		var handlerCorrelationID string
+		RequestContext(RequestContextConfig{
+			NewRequestID: func() string {
+				calls++
+				return "still invalid"
+			},
+		})(ctx, func(next huma.Context) {
+			handlerRequestID = RequestID(next.Context())
+			handlerCorrelationID = CorrelationID(next.Context())
+		})
+
+		if calls != 2 {
+			t.Fatalf("NewRequestID calls = %d, want 2", calls)
+		}
+		assertGeneratedRequestID(t, handlerRequestID)
+		assertRequestIDSurfaces(t, handlerRequestID, handlerRequestID, recorder)
+		if handlerCorrelationID != handlerRequestID {
+			t.Fatalf("CorrelationID = %q, want fallback request ID %q", handlerCorrelationID, handlerRequestID)
+		}
+	})
+
+	t.Run("validator rejection of fallback uses deterministic last resort", func(t *testing.T) {
+		t.Parallel()
+
+		calls := 0
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+		var handlerRequestID string
+		var handlerCorrelationID string
+		RequestContext(RequestContextConfig{
+			NewRequestID: func() string {
+				calls++
+				return "rejected"
+			},
+			ValidateRequestID: func(string) bool { return false },
+		})(ctx, func(next huma.Context) {
+			handlerRequestID = RequestID(next.Context())
+			handlerCorrelationID = CorrelationID(next.Context())
+		})
+
+		if calls != 2 {
+			t.Fatalf("NewRequestID calls = %d, want 2", calls)
+		}
+		const lastResortID = "00000000000000000000000000000000"
+		assertRequestIDSurfaces(t, handlerRequestID, lastResortID, recorder)
+		if handlerCorrelationID != lastResortID {
+			t.Fatalf("CorrelationID = %q, want last-resort request ID %q", handlerCorrelationID, lastResortID)
+		}
+	})
+}
+
+func TestRequestContextFallbackIDsAreUniqueUnderConcurrency(t *testing.T) {
+	t.Parallel()
+
+	const requests = 64
+	middleware := RequestContext(RequestContextConfig{
+		NewRequestID: func() string { return "invalid value" },
+	})
+	type result struct {
+		requestID     string
+		correlationID string
+		responseID    string
+	}
+	results := make(chan result, requests)
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(requests)
+	for range requests {
+		go func() {
+			defer waitGroup.Done()
+			ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+			var got result
+			middleware(ctx, func(next huma.Context) {
+				got.requestID = RequestID(next.Context())
+				got.correlationID = CorrelationID(next.Context())
+			})
+			got.responseID = recorder.Header().Get(defaultRequestIDHeader)
+			results <- got
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+
+	seen := make(map[string]struct{}, requests)
+	for got := range results {
+		assertGeneratedRequestID(t, got.requestID)
+		if got.correlationID != got.requestID || got.responseID != got.requestID {
+			t.Fatalf("request ID surfaces diverged: %#v", got)
+		}
+		if _, duplicate := seen[got.requestID]; duplicate {
+			t.Fatalf("duplicate fallback request ID generated concurrently: %q", got.requestID)
+		}
+		seen[got.requestID] = struct{}{}
+	}
+	if len(seen) != requests {
+		t.Fatalf("unique fallback request IDs = %d, want %d", len(seen), requests)
+	}
+}
+
+func TestRequestContextDefaultGeneratorProducesUniqueHexIDs(t *testing.T) {
+	t.Parallel()
+
+	const requests = 16
+	middleware := RequestContext(RequestContextConfig{})
+	seen := make(map[string]struct{}, requests)
+	for range requests {
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+		var requestID string
+		var correlationID string
+		middleware(ctx, func(next huma.Context) {
+			requestID = RequestID(next.Context())
+			correlationID = CorrelationID(next.Context())
+		})
+
+		assertGeneratedRequestID(t, requestID)
+		if correlationID != requestID {
+			t.Fatalf("CorrelationID = %q, want generated request ID %q", correlationID, requestID)
+		}
+		if got := recorder.Header().Get(defaultRequestIDHeader); got != requestID {
+			t.Fatalf("response request ID header = %q, want %q", got, requestID)
+		}
+		if _, duplicate := seen[requestID]; duplicate {
+			t.Fatalf("default generator returned duplicate request ID %q", requestID)
+		}
+		seen[requestID] = struct{}{}
+	}
+}
+
 func TestRequestContextResponseHeaderCanBeDisabled(t *testing.T) {
 	t.Parallel()
 
 	ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+	called := false
 	RequestContext(RequestContextConfig{
 		DisableResponseHeader: true,
 		NewRequestID:          func() string { return "generated" },
-	})(ctx, func(huma.Context) {})
+	})(ctx, func(next huma.Context) {
+		called = true
+		if got := RequestID(next.Context()); got != "generated" {
+			t.Fatalf("downstream RequestID = %q, want generated", got)
+		}
+	})
 
 	if got := recorder.Header().Get(defaultRequestIDHeader); got != "" {
 		t.Fatalf("response request ID header = %q, want empty", got)
 	}
+	if !called {
+		t.Fatal("RequestContext did not call downstream when the response header was disabled")
+	}
 }
 
-func TestRequestContextInstallsRequestLogger(t *testing.T) {
+func TestRequestContextWithoutConfiguredLoggerProvidesDisabledLogger(t *testing.T) {
 	t.Parallel()
 
-	var buffer bytes.Buffer
-	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
-	if err != nil {
-		t.Fatalf("NewLogger returned error: %v", err)
-	}
-	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
-		defaultRequestIDHeader: "req-huma-logger",
+	ctx, recorder := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+		defaultRequestIDHeader: "req-no-logger",
+	})
+	called := false
+	RequestContext(RequestContextConfig{})(ctx, func(next huma.Context) {
+		called = true
+		logger := Logger(next.Context())
+		if logger == nil {
+			t.Fatal("Logger returned nil for request metadata without a configured logger")
+		}
+		if entry := logger.Check(zap.InfoLevel, "discarded"); entry != nil {
+			t.Fatal("Logger enabled an entry without a configured request logger")
+		}
+		logger.Info("safe no-op request logger")
+
+		if got := RequestID(next.Context()); got != "req-no-logger" {
+			t.Fatalf("RequestID = %q, want req-no-logger", got)
+		}
+		if got := CorrelationID(next.Context()); got != "req-no-logger" {
+			t.Fatalf("CorrelationID = %q, want req-no-logger", got)
+		}
 	})
 
-	RequestContext(RequestContextConfig{
-		Logger: logger,
-	})(ctx, func(next huma.Context) {
-		Logger(next.Context()).Info("huma handler")
-	})
+	if !called {
+		t.Fatal("RequestContext did not call downstream without a configured logger")
+	}
+	if got := recorder.Header().Get(defaultRequestIDHeader); got != "req-no-logger" {
+		t.Fatalf("response request ID header = %q, want req-no-logger", got)
+	}
+}
 
-	entry := decodeSingleLogLine(t, buffer.String())
-	if got := entry["request_id"]; got != "req-huma-logger" {
-		t.Fatalf("request_id = %v", got)
+func TestRequestContextLoggerEmitsTraceFieldsOnlyWhenValid(t *testing.T) {
+	t.Parallel()
+
+	const (
+		traceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
+		parentID    = "00f067aa0ba902b7"
+		traceparent = "00-" + traceID + "-" + parentID + "-01"
+	)
+	tests := []struct {
+		name            string
+		traceparent     string
+		wantCorrelation string
+		wantTraceFields bool
+	}{
+		{name: "without trace", wantCorrelation: "req-huma-logger"},
+		{
+			name:            "with valid trace",
+			traceparent:     traceparent,
+			wantCorrelation: traceID,
+			wantTraceFields: true,
+		},
 	}
-	if got := entry["correlation_id"]; got != "req-huma-logger" {
-		t.Fatalf("correlation_id = %v", got)
-	}
-	if got := entry["message"]; got != "huma handler" {
-		t.Fatalf("message = %v", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buffer bytes.Buffer
+			logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+			if err != nil {
+				t.Fatalf("NewLogger returned error: %v", err)
+			}
+			ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+				defaultRequestIDHeader:   "req-huma-logger",
+				defaultTraceparentHeader: tt.traceparent,
+			})
+
+			RequestContext(RequestContextConfig{Logger: logger})(ctx, func(next huma.Context) {
+				Logger(next.Context()).Info("huma handler")
+			})
+
+			entry := decodeSingleLogLine(t, buffer.String())
+			assertAccessField(t, entry, "message", "huma handler")
+			assertAccessField(t, entry, "request_id", "req-huma-logger")
+			assertAccessField(t, entry, "correlation_id", tt.wantCorrelation)
+			traceFields := map[string]any{
+				"trace_id":      traceID,
+				"parent_id":     parentID,
+				"trace_flags":   "01",
+				"trace_sampled": true,
+			}
+			for key, want := range traceFields {
+				if !tt.wantTraceFields {
+					assertNoAccessField(t, entry, key)
+					continue
+				}
+				assertAccessField(t, entry, key, want)
+			}
+		})
 	}
 }
 
@@ -198,8 +500,13 @@ func TestRequestContextPreservesExistingMetadataLogger(t *testing.T) {
 	metadata := &requestMetadata{
 		RequestID:     "existing-req",
 		CorrelationID: "existing-corr",
-		Logger:        existingLogger.With(zap.String("logger_source", "existing")),
 	}
+	metadata.Logger = loggerWithMetadata(
+		existingLogger.With(zap.String("logger_source", "existing")),
+		metadata,
+		PresetDefault,
+	)
+	originalLogger := metadata.Logger
 	req := httptest.NewRequestWithContext(
 		contextWithRequestMetadata(context.Background(), metadata),
 		http.MethodGet,
@@ -215,6 +522,12 @@ func TestRequestContextPreservesExistingMetadataLogger(t *testing.T) {
 	RequestContext(RequestContextConfig{
 		Logger: configLogger.With(zap.String("logger_source", "config")),
 	})(ctx, func(next huma.Context) {
+		if got := RequestID(next.Context()); got != "existing-req" {
+			t.Fatalf("RequestID = %q, want existing-req", got)
+		}
+		if got := CorrelationID(next.Context()); got != "existing-corr" {
+			t.Fatalf("CorrelationID = %q, want existing-corr", got)
+		}
 		Logger(next.Context()).Info("preserved logger")
 	})
 
@@ -222,18 +535,28 @@ func TestRequestContextPreservesExistingMetadataLogger(t *testing.T) {
 	if got := entry["logger_source"]; got != "existing" {
 		t.Fatalf("logger_source = %v", got)
 	}
+	if got := entry["request_id"]; got != "existing-req" {
+		t.Fatalf("request_id = %v, want existing-req", got)
+	}
+	if got := entry["correlation_id"]; got != "existing-corr" {
+		t.Fatalf("correlation_id = %v, want existing-corr", got)
+	}
 	if got := strings.TrimSpace(configBuffer.String()); got != "" {
 		t.Fatalf("config logger was used: %s", got)
 	}
-	if metadata.Logger == nil {
-		t.Fatal("existing metadata logger was cleared")
+	if metadata.Logger != originalLogger {
+		t.Fatal("RequestContext replaced the logger on the incoming metadata")
 	}
 }
 
 func TestRequestContextLoggerInstallDoesNotMutateExistingMetadata(t *testing.T) {
 	t.Parallel()
 
-	logger := zap.NewNop()
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
 	metadata := &requestMetadata{
 		RequestID:     "existing-req",
 		CorrelationID: "existing-corr",
@@ -253,13 +576,21 @@ func TestRequestContextLoggerInstallDoesNotMutateExistingMetadata(t *testing.T) 
 	RequestContext(RequestContextConfig{
 		Logger: logger,
 	})(ctx, func(next huma.Context) {
-		if got := Logger(next.Context()); got == nil {
-			t.Fatal("Logger returned nil")
-		}
+		Logger(next.Context()).Info("installed without mutation")
 	})
 
 	if metadata.Logger != nil {
 		t.Fatal("RequestContext mutated input metadata")
+	}
+	entry := decodeSingleLogLine(t, buffer.String())
+	if got := entry["message"]; got != "installed without mutation" {
+		t.Fatalf("message = %v", got)
+	}
+	if got := entry["request_id"]; got != "existing-req" {
+		t.Fatalf("request_id = %v, want existing-req", got)
+	}
+	if got := entry["correlation_id"]; got != "existing-corr" {
+		t.Fatalf("correlation_id = %v, want existing-corr", got)
 	}
 }
 
@@ -372,6 +703,7 @@ func TestRequestContextInvalidTraceFallsBackToRequestID(t *testing.T) {
 	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
 		defaultRequestIDHeader:   "req-1",
 		defaultTraceparentHeader: "not-a-traceparent",
+		defaultTracestateHeader:  "vendor=value",
 	})
 
 	var gotContext context.Context
@@ -382,8 +714,8 @@ func TestRequestContextInvalidTraceFallsBackToRequestID(t *testing.T) {
 	if got := CorrelationID(gotContext); got != "req-1" {
 		t.Fatalf("CorrelationID = %q, want request ID", got)
 	}
-	if trace := Trace(gotContext); trace.Valid {
-		t.Fatalf("Trace.Valid = true for invalid input: %#v", trace)
+	if trace := Trace(gotContext); trace != (TraceContext{}) {
+		t.Fatalf("Trace = %#v, want zero value for invalid traceparent with tracestate", trace)
 	}
 }
 
@@ -394,13 +726,14 @@ func TestRequestContextCustomHeaders(t *testing.T) {
 	ctx, recorder := newHumaTestContext(http.MethodGet, "/test", map[string]string{
 		"X-Correlation-Request": "custom-id",
 		"X-Traceparent":         traceparent,
+		"X-Tracestate":          "custom=value",
 	})
 
 	var gotContext context.Context
 	RequestContext(RequestContextConfig{
 		RequestIDHeader:   "X-Correlation-Request",
 		TraceparentHeader: "X-Traceparent",
-		ResponseHeader:    "X-Correlation-Request",
+		TracestateHeader:  "X-Tracestate",
 	})(ctx, func(next huma.Context) {
 		gotContext = next.Context()
 	})
@@ -411,8 +744,11 @@ func TestRequestContextCustomHeaders(t *testing.T) {
 	if got := CorrelationID(gotContext); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Fatalf("CorrelationID = %q", got)
 	}
+	if got := Trace(gotContext).Tracestate; got != "custom=value" {
+		t.Fatalf("Tracestate = %q", got)
+	}
 	if got := recorder.Header().Get("X-Correlation-Request"); got != "custom-id" {
-		t.Fatalf("custom response header = %q", got)
+		t.Fatalf("response header did not default to the custom request ID header: %q", got)
 	}
 
 	defaultCtx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
@@ -432,14 +768,16 @@ func TestAccessorsAreSafeWhenMetadataIsMissing(t *testing.T) {
 	if got := RequestID(nil); got != "" { //nolint:staticcheck // RequestID explicitly supports nil contexts.
 		t.Fatalf("RequestID(nil) = %q", got)
 	}
-	if got := CorrelationID(context.Background()); got != "" {
-		t.Fatalf("CorrelationID(background) = %q", got)
+	if got := CorrelationID(nil); got != "" { //nolint:staticcheck // CorrelationID explicitly supports nil contexts.
+		t.Fatalf("CorrelationID(nil) = %q", got)
 	}
-	if trace := Trace(context.Background()); trace.Valid {
-		t.Fatalf("Trace(background).Valid = true")
+	if trace := Trace(nil); trace != (TraceContext{}) { //nolint:staticcheck // Trace explicitly supports nil contexts.
+		t.Fatalf("Trace(nil) = %#v, want zero value", trace)
 	}
-	if logger := Logger(context.Background()); logger == nil {
-		t.Fatal("Logger(background) returned nil")
+	if logger := Logger(nil); logger == nil { //nolint:staticcheck // Logger explicitly supports nil contexts.
+		t.Fatal("Logger(nil) returned nil")
+	} else {
+		logger.Info("safe no-op logger")
 	}
 }
 
@@ -522,13 +860,86 @@ func TestHTTPRequestContextRequestIDLifecycle(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		incoming      string
+		want          string
+		wantNewIDCall bool
+	}{
+		{
+			name:     "custom-valid incoming id is preserved",
+			incoming: "tenant:http-client",
+			want:     "tenant:http-client",
+		},
+		{
+			name:          "custom-invalid incoming id is replaced",
+			incoming:      "http-client",
+			want:          "tenant:http-generated",
+			wantNewIDCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			newIDCalls := 0
+			var handlerRequestID string
+			var handlerCorrelationID string
+			handler := HTTPRequestContext(HTTPRequestContextConfig{
+				NewRequestID: func() string {
+					newIDCalls++
+					return "tenant:http-generated"
+				},
+				ValidateRequestID: func(value string) bool {
+					return strings.HasPrefix(value, "tenant:")
+				},
+			})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				handlerRequestID = RequestID(r.Context())
+				handlerCorrelationID = CorrelationID(r.Context())
+			}))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/http", nil)
+			req.Header.Set(defaultRequestIDHeader, tt.incoming)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			wantCalls := 0
+			if tt.wantNewIDCall {
+				wantCalls = 1
+			}
+			if newIDCalls != wantCalls {
+				t.Fatalf("NewRequestID calls = %d, want %d", newIDCalls, wantCalls)
+			}
+			if handlerRequestID != tt.want || handlerCorrelationID != tt.want {
+				t.Fatalf(
+					"handler request identity diverged: request_id=%q correlation_id=%q want=%q",
+					handlerRequestID, handlerCorrelationID, tt.want,
+				)
+			}
+			if got := recorder.Header().Get(defaultRequestIDHeader); got != tt.want {
+				t.Fatalf("response request ID header = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTPRequestContextResponseHeaderCanBeDisabled(t *testing.T) {
 	t.Parallel()
 
+	called := false
 	handler := HTTPRequestContext(HTTPRequestContextConfig{
 		DisableResponseHeader: true,
 		NewRequestID:          func() string { return "generated" },
-	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	})(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := RequestID(r.Context()); got != "generated" {
+			t.Fatalf("downstream RequestID = %q, want generated", got)
+		}
+	}))
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(
@@ -538,6 +949,9 @@ func TestHTTPRequestContextResponseHeaderCanBeDisabled(t *testing.T) {
 
 	if got := recorder.Header().Get(defaultRequestIDHeader); got != "" {
 		t.Fatalf("response header = %q, want empty", got)
+	}
+	if !called {
+		t.Fatal("HTTPRequestContext did not call downstream when the response header was disabled")
 	}
 }
 
@@ -596,27 +1010,72 @@ func TestHTTPRequestContextCombinesTracestateHeaders(t *testing.T) {
 	}
 }
 
-func TestHTTPRequestContextDropsOverlongTracestateAndInvalidTrace(t *testing.T) {
+func TestHTTPRequestContextRejectsInvalidTraceAndOverlongTracestate(t *testing.T) {
 	t.Parallel()
 
-	var gotContext context.Context
-	handler := HTTPRequestContext(HTTPRequestContextConfig{})(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			gotContext = r.Context()
+	const (
+		traceID     = "4bf92f3577b34da6a3ce929d0e0e4736"
+		traceparent = "00-" + traceID + "-00f067aa0ba902b7-01"
+	)
+	tests := []struct {
+		name            string
+		requestID       string
+		traceparent     string
+		tracestate      string
+		wantCorrelation string
+		wantValid       bool
+	}{
+		{
+			name:            "valid trace drops tracestate above maximum length",
+			requestID:       "req-overlong-tracestate",
+			traceparent:     traceparent,
+			tracestate:      strings.Repeat("b", maxTracestateLen+1),
+			wantCorrelation: traceID,
+			wantValid:       true,
 		},
-	))
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/http", nil)
-	req.Header.Set(defaultRequestIDHeader, "req-invalid-trace")
-	req.Header.Set("Traceparent", "not-a-traceparent")
-	req.Header.Set("Tracestate", strings.Repeat("b", maxTracestateLen+1))
-
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-
-	if got := CorrelationID(gotContext); got != "req-invalid-trace" {
-		t.Fatalf("CorrelationID = %q", got)
+		{
+			name:            "invalid trace discards otherwise valid tracestate",
+			requestID:       "req-invalid-trace",
+			traceparent:     "not-a-traceparent",
+			tracestate:      "vendor=value",
+			wantCorrelation: "req-invalid-trace",
+		},
 	}
-	if trace := Trace(gotContext); trace.Valid || trace.Tracestate != "" {
-		t.Fatalf("Trace = %#v", trace)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotContext context.Context
+			handler := HTTPRequestContext(HTTPRequestContextConfig{})(http.HandlerFunc(
+				func(_ http.ResponseWriter, r *http.Request) {
+					gotContext = r.Context()
+				},
+			))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/http", nil)
+			req.Header.Set(defaultRequestIDHeader, tt.requestID)
+			req.Header.Set("Traceparent", tt.traceparent)
+			req.Header.Set("Tracestate", tt.tracestate)
+
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := CorrelationID(gotContext); got != tt.wantCorrelation {
+				t.Fatalf("CorrelationID = %q, want %q", got, tt.wantCorrelation)
+			}
+			trace := Trace(gotContext)
+			if trace.Valid != tt.wantValid {
+				t.Fatalf("Trace.Valid = %v, want %v; trace=%#v", trace.Valid, tt.wantValid, trace)
+			}
+			if trace.Tracestate != "" {
+				t.Fatalf("Trace.Tracestate = %q, want empty", trace.Tracestate)
+			}
+			if tt.wantValid && trace.Traceparent != traceparent {
+				t.Fatalf("Trace.Traceparent = %q, want %q", trace.Traceparent, traceparent)
+			}
+			if !tt.wantValid && trace != (TraceContext{}) {
+				t.Fatalf("Trace = %#v, want zero value for invalid traceparent", trace)
+			}
+		})
 	}
 }
 
@@ -641,6 +1100,9 @@ func TestHTTPRequestContextInstallsRequestLogger(t *testing.T) {
 	entry := decodeSingleLogLine(t, buffer.String())
 	if got := entry["request_id"]; got != "req-http-logger" {
 		t.Fatalf("request_id = %v", got)
+	}
+	if got := entry["correlation_id"]; got != "req-http-logger" {
+		t.Fatalf("correlation_id = %v", got)
 	}
 	if got := entry["message"]; got != "http handler" {
 		t.Fatalf("message = %v", got)
@@ -758,6 +1220,9 @@ func TestHTTPRequestContextPreservesExistingMetadataLogger(t *testing.T) {
 	if got := entry["request_id"]; got != "req-nested" {
 		t.Fatalf("request_id = %v", got)
 	}
+	if got := entry["correlation_id"]; got != "req-nested" {
+		t.Fatalf("correlation_id = %v", got)
+	}
 	if got := strings.TrimSpace(innerBuffer.String()); got != "" {
 		t.Fatalf("inner logger was used: %s", got)
 	}
@@ -790,8 +1255,52 @@ func TestHTTPRequestContextCompletesLoggerOnlyContext(t *testing.T) {
 	if got := entry["request_id"]; got != "req-completed" {
 		t.Fatalf("request_id = %v", got)
 	}
+	if got := entry["correlation_id"]; got != "req-completed" {
+		t.Fatalf("correlation_id = %v", got)
+	}
 	if got := entry["message"]; got != "completed context" {
 		t.Fatalf("message = %v", got)
+	}
+}
+
+func TestRequestContextCompletesLoggerOnlyContext(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	req := httptest.NewRequestWithContext(
+		contextWithRequestLogger(context.Background(), nil, logger),
+		http.MethodGet,
+		"/test",
+		nil,
+	)
+	req.Header.Set(defaultRequestIDHeader, "req-huma-completed")
+	recorder := httptest.NewRecorder()
+	ctx := humatest.NewContext(
+		&huma.Operation{Method: http.MethodGet, Path: "/test", DefaultStatus: http.StatusOK},
+		req,
+		recorder,
+	)
+
+	RequestContext(RequestContextConfig{})(ctx, func(next huma.Context) {
+		Logger(next.Context()).Info("completed huma context")
+	})
+
+	entry := decodeSingleLogLine(t, buffer.String())
+	if got := entry["request_id"]; got != "req-huma-completed" {
+		t.Fatalf("request_id = %v", got)
+	}
+	if got := entry["correlation_id"]; got != "req-huma-completed" {
+		t.Fatalf("correlation_id = %v", got)
+	}
+	if got := entry["message"]; got != "completed huma context" {
+		t.Fatalf("message = %v", got)
+	}
+	if got := recorder.Header().Get(defaultRequestIDHeader); got != "req-huma-completed" {
+		t.Fatalf("response request ID header = %q", got)
 	}
 }
 
@@ -830,6 +1339,35 @@ func TestRequestContextReusesHTTPMetadata(t *testing.T) {
 
 	if got := recorder.Header().Get(defaultRequestIDHeader); got != "http-req" {
 		t.Fatalf("response header = %q", got)
+	}
+}
+
+func assertRequestIDSurfaces(
+	t *testing.T,
+	handlerRequestID string,
+	want string,
+	recorder *httptest.ResponseRecorder,
+) {
+	t.Helper()
+	if handlerRequestID != want {
+		t.Fatalf("handler RequestID = %q, want %q", handlerRequestID, want)
+	}
+	if got := recorder.Header().Get(defaultRequestIDHeader); got != want {
+		t.Fatalf("response request ID header = %q, want %q", got, want)
+	}
+}
+
+func assertGeneratedRequestID(t *testing.T, requestID string) {
+	t.Helper()
+	decoded, err := hex.DecodeString(requestID)
+	if err != nil {
+		t.Fatalf("generated request ID = %q, want lowercase hexadecimal: %v", requestID, err)
+	}
+	if len(decoded) != 16 || requestID != strings.ToLower(requestID) || !DefaultValidateRequestID(requestID) {
+		t.Fatalf("generated request ID = %q, want 16 lowercase hexadecimal bytes", requestID)
+	}
+	if requestID == strings.Repeat("0", 32) {
+		t.Fatal("generated request ID is the all-zero last-resort value")
 	}
 }
 
