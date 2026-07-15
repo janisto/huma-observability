@@ -1,5 +1,11 @@
 # huma-observability
 
+[![Latest release](https://img.shields.io/github/v/release/janisto/huma-observability)](https://github.com/janisto/huma-observability/releases/latest)
+[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability)
+[![Go version](https://img.shields.io/github/go-mod/go-version/janisto/huma-observability)](https://github.com/janisto/huma-observability/blob/main/go.mod)
+[![CI](https://img.shields.io/github/actions/workflow/status/janisto/huma-observability/ci.yml?branch=main&label=CI)](https://github.com/janisto/huma-observability/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/janisto/huma-observability)](LICENSE)
+
 `huma-observability` provides request correlation, request-scoped Zap loggers,
 and structured Zap access logging middleware for
 [Huma v2](https://github.com/danielgtaylor/huma) APIs. It also provides a small
