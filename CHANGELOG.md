@@ -2,15 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.3.1 - 2026-07-15
+
+### Added
+
+- Added structured bug and feature request forms that collect reproducible,
+  redacted diagnostics and package, Huma, Go, and platform versions.
+- Added a repository-local adversarial testing skill for contributors.
 
 ### Changed
 
-- Added a repository-local adversarial testing skill and strengthened the test
-  suite with behavioral, boundary, failure-recovery, concurrency, and mutation
-  checks for request context, access logging, logger configuration, trace
-  parsing, provider schemas, and the local wrapper example. Runtime behavior
-  and the public API are unchanged.
+- Simplified the runnable examples and public documentation, using GCP as the
+  canonical configuration while retaining provider-neutral, AWS, Azure, and
+  local wrapper examples.
+- Strengthened the test suite with behavioral, boundary, failure-recovery,
+  concurrency, fuzz, and mutation checks for request context, access logging,
+  logger configuration, trace parsing, provider schemas, and the local wrapper
+  example.
+- Updated CI to cancel superseded runs for the same ref and removed the weekly
+  scheduled run.
+- Runtime behavior and the public API are unchanged from v0.3.0.
 
 ## v0.3.0 - 2026-07-12
 
