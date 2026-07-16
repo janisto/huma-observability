@@ -12,6 +12,32 @@ and structured Zap access logging middleware for
 standard `net/http` request-context middleware for services that have non-Huma
 routes.
 
+## Why this package exists
+
+Managed platforms such as Cloud Run already collect container output.
+Applications should only need to write structured JSON to standard output
+(`stdout`); the platform can handle ingestion and delivery.
+
+Compared with sending logs through an in-process cloud logging client, this
+reduces container CPU, memory, and network use by removing logging API calls,
+authentication, buffering, batching, and retry work from the application. Under
+sustained logging load, that reduction can provide a noticeable performance
+improvement. It also avoids the dependency and maintenance cost of a cloud
+logging SDK, including its configuration, credentials, and upgrades.
+
+This package turns that simple pipeline into useful production observability.
+It provides validated request IDs, strict W3C trace correlation,
+request-scoped fields, and one structured terminal access record. Application
+and access logs share the same correlation metadata, making all records from a
+request easier to find, filter, and understand.
+
+Cloud presets map the same logging contract to provider-oriented fields without
+coupling application code to a cloud logging SDK. The package focuses on
+structured logging and request correlation: it does not create spans, configure
+OpenTelemetry, or ship logs to a backend.
+
+## Package scope
+
 The module path is `github.com/janisto/huma-observability`; the declared Go
 package name is `obs`.
 
@@ -33,8 +59,7 @@ Use this package when your Huma v2 service needs:
 - Cloud-oriented log fields for Google Cloud Logging, AWS CloudWatch/X-Ray
   query paths, or Azure Monitor/Application Insights ingestion.
 
-Do not use this package as a tracing system. It does not create spans, export
-metrics, configure OpenTelemetry, create AWS X-Ray segments, or emit generic
+It also does not export metrics, create AWS X-Ray segments, or emit generic
 `net/http` access logs.
 
 ## Requirements
@@ -384,3 +409,55 @@ test -z "$(gofmt -l .)"
   https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
 - OpenTelemetry `otelhttp` provides Go HTTP server and client instrumentation:
   https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+
+## Mutation Testing
+
+Install [Gremlins](https://github.com/go-gremlins/gremlins) with Homebrew on
+macOS:
+
+```sh
+brew tap go-gremlins/tap
+brew install gremlins
+```
+
+Then run its mutation campaign against covered production code with:
+
+```sh
+just mutation
+```
+
+Gremlins changes expressions and conditions, then checks whether the existing
+tests detect each behavioral change. Review `LIVED` mutants as possible test
+gaps; equivalent transformations do not need artificial assertions. Mutation
+testing intentionally runs outside `just qa` and may take several minutes. The
+configured per-mutant safety timeout does not limit the total campaign time.
+
+## Fuzz Testing
+
+This repository uses Go's native fuzzing engine for `FuzzParseTraceparent`.
+Run the default ten-second session with:
+
+```sh
+just fuzz
+```
+
+Pass the target and duration explicitly for a longer run:
+
+```sh
+just fuzz FuzzParseTraceparent 1m
+```
+
+The equivalent native Go command is:
+
+```sh
+go test -fuzz=FuzzParseTraceparent -fuzztime=10s .
+```
+
+Go first replays the seed corpus and then generates new inputs. When fuzzing
+finds a failure, it minimizes the input and writes it under
+`testdata/fuzz/FuzzParseTraceparent`; normal `go test ./...` runs saved corpus
+inputs as regression tests. Review and commit a failing input together with the
+fix when it represents behavior the parser must preserve.
+
+See the [Go fuzzing documentation](https://go.dev/doc/security/fuzz/) for the
+engine's workflow and additional flags.
