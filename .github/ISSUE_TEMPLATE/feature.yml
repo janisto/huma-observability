@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Feature requests should start with a concrete application need and explain how the result can be verified. Public API and log-schema changes carry compatibility costs even during the `v0.x` release line.
+        Feature requests should start with a concrete application need and explain how the result can be verified. Public API and log-schema changes must preserve v1 compatibility unless they are proposed for a future major release.
 
         Before filing, search the existing issues and review the README and examples. If an existing feature already addresses the use case, explain the remaining gap.
 

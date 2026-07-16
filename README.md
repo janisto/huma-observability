@@ -68,9 +68,10 @@ It also does not export metrics, create AWS X-Ray segments, or emit generic
 - Huma v2.
 - Zap.
 
-The package is currently intended for a `v0.x` release line. Public API names
-and log field names are maintained carefully, but this is not a v1
-compatibility promise yet.
+The v1 release line follows Semantic Versioning. Exported APIs, structured log
+fields, defaults, and supported runtime versions are compatibility contracts.
+Breaking changes require a new major version and will include migration
+guidance.
 
 ## Install
 
