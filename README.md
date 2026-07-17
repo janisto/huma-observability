@@ -65,7 +65,7 @@ It also does not export metrics, create AWS X-Ray segments, or emit generic
 ## Requirements
 
 - Go 1.25 or newer.
-- Huma v2.
+- Huma v2.30.0 or newer within the Huma v2 line.
 - Zap.
 
 The v1 release line follows Semantic Versioning. Exported APIs, structured log

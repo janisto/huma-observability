@@ -14,6 +14,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Added a tested GCP health-route use case that writes correlated structured
   application logs at info and debug levels alongside the terminal access log.
 
+### Changed
+
+- Lowered the minimum supported Huma v2 version from v2.38.0 to v2.30.0 and
+  added CI coverage against the latest Huma v2 release.
+
 ## [1.0.0] - 2026-07-16
 
 ### Added
