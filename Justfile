@@ -48,7 +48,13 @@ fuzz target='FuzzParseTraceparent' duration='10s' *args:
 
 # Run the complete non-mutating repository gate.
 [group('qa')]
-qa: format lint build test race
+workflow-check:
+    actionlint
+    zizmor --offline .
+
+# Run the complete non-mutating repository gate.
+[group('qa')]
+qa: workflow-check format lint build test race
 
 # Check dependencies and the Go toolchain for known vulnerabilities.
 [group('security')]

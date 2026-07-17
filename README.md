@@ -156,14 +156,26 @@ logs with `path_template` and `operation_id`.
 Use `obs.Logger(ctx)` anywhere you have the request `context.Context`.
 
 ```go
-func GetRepository(ctx context.Context, owner, repo string) error {
-	obs.Logger(ctx).Info("loading github repository",
-		zap.String("owner", owner),
-		zap.String("repo", repo),
+func Health(ctx context.Context) {
+	logger := obs.Logger(ctx)
+	logger.Info("health check",
+		zap.String("service_name", "example-service"),
+		zap.String("service_version", "1.0.0"),
+		zap.String("health_status", "ok"),
 	)
-	return nil
+	logger.Debug("dependency check",
+		zap.String("dependency", "database"),
+		zap.String("dependency_status", "ok"),
+	)
 }
 ```
+
+Application records and the package-owned access record share the request
+logger's correlation fields. `NewLogger` defaults to info level; configure
+`LoggerConfig.Level` with `zapcore.DebugLevel` when debug events should be
+written. The canonical GCP example and its route-level tests demonstrate both
+level settings and decode newline-delimited JSON through the same writer
+boundary that defaults to stdout.
 
 `Logger(ctx)` never returns nil. Configure `RequestContextConfig.Logger` for
 Huma-only services, or `HTTPRequestContextConfig.Logger` at the router boundary
@@ -378,18 +390,25 @@ The package itself stays Zap-native and does not add application-specific
 
 ## Validation
 
-Use the same checks locally that CI runs:
+Development uses [just](https://github.com/casey/just). On macOS, install the
+workflow linters:
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-"$(go env GOPATH)/bin/golangci-lint" run ./...
-go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
-"$(go env GOPATH)/bin/govulncheck" ./...
-test -z "$(gofmt -l .)"
+brew install actionlint zizmor
 ```
+
+Then run the repository gates:
+
+```sh
+just install
+just qa
+just vuln
+```
+
+`just qa` runs formatting, lint, build, tests, race tests,
+[actionlint](https://github.com/rhysd/actionlint), and
+[zizmor](https://docs.zizmor.sh/). `just vuln` runs the Go vulnerability scanner
+separately.
 
 ## References
 

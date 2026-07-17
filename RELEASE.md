@@ -9,7 +9,7 @@ are lightweight and immutable.
 1. Open a pull request titled `chore: prepare vX.Y.Z`.
 2. Add the version, release date, and user-visible changes to `CHANGELOG.md`.
 3. Update public documentation for any changed API or behavior.
-4. Run the complete commit checks from `AGENTS.md`.
+4. Run `just qa`, `just vuln`, and `git diff --check`.
 5. Merge the green pull request to `main`.
 
 ## 2. Tag the reviewed commit
