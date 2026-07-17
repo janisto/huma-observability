@@ -1,0 +1,53 @@
+# Auto-label PRs based on changed file paths
+
+api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'accesslog.go'
+          - 'context.go'
+          - 'doc.go'
+          - 'http_context.go'
+          - 'logger.go'
+          - 'trace.go'
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*_test.go'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'README.md'
+          - 'EXAMPLES.md'
+          - 'CHANGELOG.md'
+          - 'RELEASE.md'
+          - 'examples/**'
+
+packaging:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'go.mod'
+          - 'go.sum'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**'
+          - 'Justfile'
+          - '.golangci.yml'
+          - '.gremlins.yaml'
+
+github-actions:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+
+feature:
+  - head-branch: ['^feature', 'feature']
+
+bug:
+  - head-branch: ['^bug', 'bug']
+
+improvement:
+  - head-branch: ['^improve', 'improve', 'improvement']

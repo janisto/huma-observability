@@ -67,6 +67,22 @@ The handler and access records contain the same correlation fields. The access
 record also contains `httpRequest`, `/health` as the path template, `get-health`
 as Huma's operation ID, and status 200.
 
+The health handler writes service-owned `INFO` and `DEBUG` events before the
+package writes the terminal access record. The example enables debug logging,
+so stdout contains three newline-delimited JSON objects in this order:
+
+1. `health check` with `service_name`, `service_version`, and `health_status`.
+2. `dependency check` with `dependency`, `dependency_status`, and
+   `check_duration_ms`.
+3. `request completed` with the common HTTP request fields owned by this
+   package.
+
+All three records share `request_id` and `correlation_id`. At the default info
+level, the debug dependency record is omitted while the health and access
+records remain. Tests exercise the real Huma route and decode the JSON output;
+Cloud Logging ingestion and trace linking are intentionally outside this
+repository's test boundary.
+
 Representative GCP fields:
 
 ```json

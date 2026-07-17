@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Added a tested GCP health-route use case that writes correlated structured
+  application logs at info and debug levels alongside the terminal access log.
+
 ## [1.0.0] - 2026-07-16
 
 ### Added
