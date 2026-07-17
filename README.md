@@ -4,7 +4,6 @@
 [![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability)
 [![Go version](https://img.shields.io/github/go-mod/go-version/janisto/huma-observability)](https://github.com/janisto/huma-observability/blob/main/go.mod)
 [![CI](https://img.shields.io/github/actions/workflow/status/janisto/huma-observability/ci.yml?branch=main&label=CI)](https://github.com/janisto/huma-observability/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/janisto/huma-observability)](LICENSE)
 [![Socket Badge](https://badge.socket.dev/go/package/github.com/janisto/huma-observability)](https://socket.dev/go/package/github.com/janisto/huma-observability)
 
 `huma-observability` provides request correlation, request-scoped Zap loggers,
