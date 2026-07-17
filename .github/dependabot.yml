@@ -5,6 +5,9 @@ version: 2
 updates:
   - package-ecosystem: "gomod"
     directory: "/"
+    # Go modules have no lockfile; preserve public minimums while retaining
+    # Dependabot security updates.
+    open-pull-requests-limit: 0
     schedule:
       interval: "quarterly"
       time: "08:00"
@@ -15,19 +18,6 @@ updates:
       prefix: "chore(deps)"
     labels:
       - "dependencies"
-    groups:
-      updates:
-        patterns:
-          - "*"
-        update-types:
-          - "patch"
-          - "minor"
-      major-updates:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

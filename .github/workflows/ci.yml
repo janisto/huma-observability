@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: Go
+    name: Go / Huma 2.30.0
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,3 +47,24 @@ jobs:
 
       - name: Race test
         run: go test -race ./...
+
+  latest-huma:
+    name: Go / latest Huma v2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Select latest Huma v2
+        run: go get github.com/danielgtaylor/huma/v2@latest
+
+      - name: Test
+        run: go test ./...
