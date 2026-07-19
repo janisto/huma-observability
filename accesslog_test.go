@@ -264,6 +264,32 @@ func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 	}
 }
 
+func TestAccessMetadataStringsRejectEmptyDuplicateAndControlValues(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := singleValidHeaderValue([]string{"agent/1"}); !ok {
+		t.Fatal("one valid User-Agent was rejected")
+	}
+	for _, values := range [][]string{nil, {""}, {"agent/1", "agent/1"}, {"agent/1\nforged"}} {
+		if value, ok := singleValidHeaderValue(values); ok || value != "" {
+			t.Fatalf("singleValidHeaderValue(%q) = %q, %v; want empty, false", values, value, ok)
+		}
+	}
+	if validMetadataString("get_item\nforged") {
+		t.Fatal("operation ID containing a control character was accepted")
+	}
+	for _, value := range []string{"\x1f", "\x7f"} {
+		if validMetadataString(value) {
+			t.Fatalf("metadata control boundary %q was accepted", value)
+		}
+	}
+	for _, value := range []string{" ", "~"} {
+		if !validMetadataString(value) {
+			t.Fatalf("printable metadata boundary %q was rejected", value)
+		}
+	}
+}
+
 func TestAccessLoggerIntegrationLogsHumaHandlerErrors(t *testing.T) {
 	t.Parallel()
 
@@ -476,6 +502,25 @@ func TestAccessLoggerContainsTelemetryCallbackPanics(t *testing.T) {
 		assertAccessField(t, entry, "status", float64(http.StatusAccepted))
 		assertNoAccessField(t, entry, "tenant_id")
 	})
+}
+
+func TestSafeStatusLevelRejectsTerminalAndUnknownLevels(t *testing.T) {
+	t.Parallel()
+
+	for _, level := range []zapcore.Level{
+		zapcore.DPanicLevel,
+		zapcore.PanicLevel,
+		zapcore.FatalLevel,
+		zapcore.Level(99),
+	} {
+		t.Run(level.String(), func(t *testing.T) {
+			t.Parallel()
+			got := safeStatusLevel(func(int) zapcore.Level { return level }, http.StatusNotFound)
+			if got != zapcore.WarnLevel {
+				t.Fatalf("safeStatusLevel returned %s, want WARN fallback", got)
+			}
+		})
+	}
 }
 
 func TestAccessLoggerContainsWriterPanicWithoutChangingHandler(t *testing.T) {
@@ -1549,7 +1594,7 @@ func assertNoAccessField(t *testing.T, entry map[string]any, key string) {
 	}
 }
 
-func TestRemoteIPStripsPort(t *testing.T) {
+func TestRemoteIPCanonicalizesValidatedAddresses(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1561,7 +1606,11 @@ func TestRemoteIPStripsPort(t *testing.T) {
 		{in: "[2001:db8::1]:443", want: "2001:db8::1"},
 		{in: "[2001:db8::1]", want: "2001:db8::1"},
 		{in: "2001:db8::1", want: "2001:db8::1"},
+		{in: "2001:0db8:0:0:0:0:0:1", want: "2001:db8::1"},
 		{in: "203.0.113.9", want: "203.0.113.9"},
+		{in: "example.com:443", want: ""},
+		{in: "peer.internal", want: ""},
+		{in: "[fe80::1%eth0]:443", want: ""},
 	}
 
 	for _, tt := range tests {
@@ -1571,6 +1620,60 @@ func TestRemoteIPStripsPort(t *testing.T) {
 				t.Fatalf("remoteIP(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRequestPathRejectsUnavailableAndNonOriginForms(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "origin form", url: "/widgets/a%2Fb?secret=true", want: "/widgets/a%2Fb"},
+		{name: "empty path", url: "https://example.test", want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, test.url, nil)
+			if test.name == "empty path" {
+				request.URL.Path = ""
+			}
+			response := httptest.NewRecorder()
+			ctx := humatest.NewContext(
+				&huma.Operation{Method: http.MethodGet, Path: "/widgets/{id}"},
+				request,
+				response,
+			)
+			if got := requestPath(ctx); got != test.want {
+				t.Fatalf("requestPath() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	request.URL.Path = ""
+	request.URL.Opaque = "//authority.example/path"
+	ctx := humatest.NewContext(
+		&huma.Operation{Method: http.MethodGet, Path: "/"},
+		request,
+		httptest.NewRecorder(),
+	)
+	if got := requestPath(ctx); got != "" {
+		t.Fatalf("requestPath() repaired opaque target as %q", got)
+	}
+
+	request = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/widgets/a", nil)
+	request.URL.Path = "/widgets/a/b"
+	request.URL.RawPath = "/widgets/a%2G"
+	ctx = humatest.NewContext(
+		&huma.Operation{Method: http.MethodGet, Path: "/widgets/{id}"},
+		request,
+		httptest.NewRecorder(),
+	)
+	if got := requestPath(ctx); got != "" {
+		t.Fatalf("requestPath() repaired malformed raw path as %q", got)
 	}
 }
 
@@ -1696,24 +1799,24 @@ func TestAccessLoggerGCPRequestURLUsesCapturedPathOnly(t *testing.T) {
 			wantPath: "/absolute",
 		},
 		{
-			name:   "opaque request target is retained",
+			name:   "opaque request target is omitted",
 			target: "/",
 			mutate: func(req *http.Request) {
 				req.URL.Path = ""
 				req.URL.Opaque = "/opaque"
 				req.Host = ""
 			},
-			wantPath: "/opaque",
+			wantPath: "",
 		},
 		{
-			name:   "empty request target falls back to root",
+			name:   "empty request target is omitted",
 			target: "/",
 			mutate: func(req *http.Request) {
 				req.URL.Path = ""
 				req.URL.Opaque = ""
 				req.Host = ""
 			},
-			wantPath: "/",
+			wantPath: "",
 		},
 	}
 
@@ -1740,12 +1843,17 @@ func TestAccessLoggerGCPRequestURLUsesCapturedPathOnly(t *testing.T) {
 			})(ctx, func(huma.Context) {})
 
 			entry := decodeSingleLogLine(t, buffer.String())
-			assertAccessField(t, entry, "path", tt.wantPath)
 			httpRequest, ok := entry["httpRequest"].(map[string]any)
 			if !ok {
 				t.Fatalf("httpRequest missing or wrong type: %#v", entry["httpRequest"])
 			}
-			assertAccessField(t, httpRequest, "requestUrl", tt.wantPath)
+			if tt.wantPath == "" {
+				assertNoAccessField(t, entry, "path")
+				assertNoAccessField(t, httpRequest, "requestUrl")
+			} else {
+				assertAccessField(t, entry, "path", tt.wantPath)
+				assertAccessField(t, httpRequest, "requestUrl", tt.wantPath)
+			}
 		})
 	}
 }

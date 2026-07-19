@@ -40,6 +40,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Validate Huma operation paths before emitting canonical `path_template`
   values; unmatched and router-specific catch-all requests remain outside the
   operation middleware boundary.
+- Fold every GCP severity into the portable five-level vocabulary, reject
+  terminal or unknown status-callback levels, omit unavailable request paths,
+  and emit only canonical unzoned IP address literals for direct peers.
 
 ## [1.0.1] - 2026-07-17
 

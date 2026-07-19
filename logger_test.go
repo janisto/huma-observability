@@ -89,7 +89,8 @@ func TestNewLoggerGCPLevelMapping(t *testing.T) {
 		{name: "warn", level: zapcore.WarnLevel, want: "WARNING"},
 		{name: "error", level: zapcore.ErrorLevel, want: "ERROR"},
 		{name: "dpanic", level: zapcore.DPanicLevel, want: "CRITICAL"},
-		{name: "unknown level", level: zapcore.Level(99), want: "LEVEL(99)"},
+		{name: "below debug", level: zapcore.Level(-99), want: "DEBUG"},
+		{name: "unknown high level", level: zapcore.Level(99), want: "CRITICAL"},
 	}
 
 	for _, tt := range tests {
@@ -100,7 +101,7 @@ func TestNewLoggerGCPLevelMapping(t *testing.T) {
 			logger, err := NewLogger(LoggerConfig{
 				Preset: PresetGCP,
 				Writer: &buffer,
-				Level:  zapcore.DebugLevel,
+				Level:  zapcore.Level(-99),
 			})
 			if err != nil {
 				t.Fatalf("NewLogger returned error: %v", err)
@@ -126,8 +127,14 @@ func TestGCPLevelEncoderMapsTerminalLevels(t *testing.T) {
 		level zapcore.Level
 		want  string
 	}{
-		{name: "panic", level: zapcore.PanicLevel, want: "ALERT"},
-		{name: "fatal", level: zapcore.FatalLevel, want: "EMERGENCY"},
+		{name: "panic", level: zapcore.PanicLevel, want: "CRITICAL"},
+		{name: "fatal", level: zapcore.FatalLevel, want: "CRITICAL"},
+		{name: "below debug", level: zapcore.Level(-2), want: "DEBUG"},
+		{name: "debug boundary", level: zapcore.DebugLevel, want: "DEBUG"},
+		{name: "info boundary", level: zapcore.InfoLevel, want: "INFO"},
+		{name: "warn boundary", level: zapcore.WarnLevel, want: "WARNING"},
+		{name: "error boundary", level: zapcore.ErrorLevel, want: "ERROR"},
+		{name: "critical boundary", level: zapcore.DPanicLevel, want: "CRITICAL"},
 	}
 
 	for _, tt := range tests {

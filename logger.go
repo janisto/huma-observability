@@ -146,22 +146,16 @@ func utcRFC3339NanoTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 }
 
 func gcpLevelEncoder(level zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
-	switch level {
-	case zapcore.DebugLevel:
+	switch {
+	case level <= zapcore.DebugLevel:
 		enc.AppendString("DEBUG")
-	case zapcore.InfoLevel:
+	case level < zapcore.WarnLevel:
 		enc.AppendString("INFO")
-	case zapcore.WarnLevel:
+	case level < zapcore.ErrorLevel:
 		enc.AppendString("WARNING")
-	case zapcore.ErrorLevel:
+	case level < zapcore.DPanicLevel:
 		enc.AppendString("ERROR")
-	case zapcore.DPanicLevel:
-		enc.AppendString("CRITICAL")
-	case zapcore.PanicLevel:
-		enc.AppendString("ALERT")
-	case zapcore.FatalLevel:
-		enc.AppendString("EMERGENCY")
 	default:
-		enc.AppendString(level.CapitalString())
+		enc.AppendString("CRITICAL")
 	}
 }

@@ -151,8 +151,8 @@ func buildRequestMetadataFromHeaders(
 	config RequestContextConfig,
 ) *requestMetadata {
 	requestID, singleRequestID := singleRawHeaderValue(requestIDValues)
-	if !singleRequestID || !validRequestID(requestID, config.ValidateRequestID) {
-		requestID = newValidRequestID(config.NewRequestID, config.ValidateRequestID)
+	if !singleRequestID || !validIncomingRequestID(requestID, config.ValidateRequestID) {
+		requestID = newValidRequestID(config.NewRequestID)
 	}
 
 	var trace TraceContext
@@ -244,23 +244,41 @@ func metadataFromContext(ctx context.Context) *requestMetadata {
 	return metadata
 }
 
-func newValidRequestID(newRequestID func() string, validate func(string) bool) string {
+func newValidRequestID(newRequestID func() string) string {
 	for range 2 {
-		id := newRequestID()
-		if validRequestID(id, validate) {
+		if id, ok := callRequestIDGenerator(newRequestID); ok {
 			return id
 		}
 	}
 
 	id := fallbackRequestID()
-	if validRequestID(id, validate) {
+	if DefaultValidateRequestID(id) {
 		return id
 	}
 	return "00000000000000000000000000000000"
 }
 
-func validRequestID(value string, validate func(string) bool) bool {
-	return DefaultValidateRequestID(value) && validate(value)
+func validIncomingRequestID(value string, validate func(string) bool) (valid bool) {
+	if !DefaultValidateRequestID(value) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			valid = false
+		}
+	}()
+	return validate(value)
+}
+
+func callRequestIDGenerator(newRequestID func() string) (id string, valid bool) {
+	defer func() {
+		if recover() != nil {
+			id = ""
+			valid = false
+		}
+	}()
+	id = newRequestID()
+	return id, DefaultValidateRequestID(id)
 }
 
 func defaultNewRequestID() string {

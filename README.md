@@ -371,6 +371,12 @@ does not enable them. When path capture is enabled, GCP
 scheme, authority, query, or fragment. GCP `remoteIp` and `userAgent` appear
 only with their corresponding portable opt-ins.
 
+Captured paths and peers are validated rather than repaired: unavailable or
+non-origin-form paths are omitted, and peer fields contain only canonical
+unzoned IPv4 or IPv6 address literals. GCP severities always use `DEBUG`,
+`INFO`, `WARNING`, `ERROR`, or `CRITICAL`. A custom status mapper returning a
+terminal or unknown Zap level falls back to the default status mapping.
+
 Logger keys:
 
 - Generic, AWS, Azure: `timestamp`, `level`, `message`, optional `logger`.
@@ -380,6 +386,10 @@ Logger keys:
 access logs. Fields using package-owned or provider-reserved keys are ignored to
 avoid duplicate core keys in the JSON output. If the returned Zap field slice
 repeats a custom key, the first value wins.
+
+That collision guarantee applies to package-controlled context and access
+merges. Arbitrary fields passed directly to a raw Zap logger are application
+owned; callers must not reuse package-reserved names or emit duplicate keys.
 
 ## Request IDs
 
@@ -394,7 +404,10 @@ Default `RequestContext` and `HTTPRequestContext` behavior:
 
 Incoming request IDs use 1–128 ASCII letters, digits, `-`, `.`, `_`, and
 `~`. A custom validator may further restrict that baseline but cannot admit
-an unsafe value. Multiple raw request-ID or `traceparent` field-lines are
+an unsafe caller value. It is applied only to caller input, never to generated
+or package-fallback IDs. A configured generator is tried exactly twice unless
+its first result passes the baseline. Validator and generator panics are
+contained as rejection/failure and do not bypass the handler. Multiple raw request-ID or `traceparent` field-lines are
 ambiguous and rejected. Invalid input is replaced or ignored while request
 processing continues.
 

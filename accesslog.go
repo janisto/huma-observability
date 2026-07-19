@@ -3,6 +3,7 @@ package obs
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -138,7 +139,13 @@ func safeStatusLevel(mapper StatusLeveler, status int) (level zapcore.Level) {
 			level = DefaultStatusLevel(status)
 		}
 	}()
-	return mapper(status)
+	level = mapper(status)
+	switch level {
+	case zapcore.DebugLevel, zapcore.InfoLevel, zapcore.WarnLevel, zapcore.ErrorLevel:
+		return level
+	default:
+		return DefaultStatusLevel(status)
+	}
 }
 
 func safeExtraFields(callback func(huma.Context) []zap.Field, ctx huma.Context) (fields []zap.Field) {
@@ -236,14 +243,16 @@ func accessLogFields(
 	path := ""
 	if config.CapturePath {
 		path = requestPath(ctx)
-		fields = append(fields, zap.String("path", path))
+		if path != "" {
+			fields = append(fields, zap.String("path", path))
+		}
 	}
 
 	if op := ctx.Operation(); op != nil {
 		if pathTemplate, ok := canonicalRouteTemplate(op.Path); ok {
 			fields = append(fields, zap.String("path_template", pathTemplate))
 		}
-		if op.OperationID != "" {
+		if validMetadataString(op.OperationID) {
 			fields = append(fields, zap.String("operation_id", op.OperationID))
 		}
 	}
@@ -256,7 +265,7 @@ func accessLogFields(
 	}
 	userAgent := ""
 	if config.CaptureUserAgent {
-		userAgent = ctx.Header("User-Agent")
+		userAgent, _ = singleValidHeaderValue(rawHeaderValues(ctx, "User-Agent"))
 	}
 	if userAgent != "" {
 		fields = append(fields, zap.String("user_agent", userAgent))
@@ -272,6 +281,26 @@ func accessLogFields(
 		}))
 	}
 	return fields
+}
+
+func validMetadataString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func singleValidHeaderValue(values []string) (string, bool) {
+	value, single := singleRawHeaderValue(values)
+	if !single || !validMetadataString(value) {
+		return "", false
+	}
+	return value, true
 }
 
 func canonicalRouteTemplate(native string) (string, bool) {
@@ -363,26 +392,37 @@ func isReservedLogField(key string) bool {
 
 func requestPath(ctx huma.Context) string {
 	url := ctx.URL()
-	if url.Path != "" {
-		return url.EscapedPath()
+	if url.Path == "" {
+		return ""
 	}
-	if url.Opaque != "" {
-		return url.Opaque
+	path := url.EscapedPath()
+	if url.RawPath != "" && path != url.RawPath {
+		return ""
 	}
-	return "/"
+	if !strings.HasPrefix(path, "/") || strings.Contains(path, "#") {
+		return ""
+	}
+	return path
 }
 
 func remoteIP(remoteAddr string) string {
 	if remoteAddr == "" {
 		return ""
 	}
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return strings.Trim(host, "[]")
+	host := remoteAddr
+	if splitHost, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = splitHost
+	} else if strings.HasPrefix(remoteAddr, "[") && strings.HasSuffix(remoteAddr, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(remoteAddr, "["), "]")
 	}
-	if strings.HasPrefix(remoteAddr, "[") && strings.Contains(remoteAddr, "]") {
-		return strings.TrimPrefix(strings.SplitN(remoteAddr, "]", 2)[0], "[")
+	if strings.Contains(host, "%") {
+		return ""
 	}
-	return remoteAddr
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	return address.String()
 }
 
 func gcpTraceFields(trace TraceContext) []zap.Field {

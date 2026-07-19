@@ -229,7 +229,7 @@ func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
 		}
 	})
 
-	t.Run("validator rejection of fallback uses deterministic last resort", func(t *testing.T) {
+	t.Run("validator applies only to caller input", func(t *testing.T) {
 		t.Parallel()
 
 		calls := 0
@@ -247,13 +247,66 @@ func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
 			handlerCorrelationID = CorrelationID(next.Context())
 		})
 
+		if calls != 1 {
+			t.Fatalf("NewRequestID calls = %d, want 1", calls)
+		}
+		assertRequestIDSurfaces(t, handlerRequestID, "rejected", recorder)
+		if handlerCorrelationID != "rejected" {
+			t.Fatalf("CorrelationID = %q, want generated request ID rejected", handlerCorrelationID)
+		}
+	})
+
+	t.Run("generator panics are retried then safely replaced", func(t *testing.T) {
+		t.Parallel()
+
+		calls := 0
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
+		var handlerCalled bool
+		var handlerRequestID string
+		RequestContext(RequestContextConfig{
+			NewRequestID: func() string {
+				calls++
+				panic("generator secret")
+			},
+		})(ctx, func(next huma.Context) {
+			handlerCalled = true
+			handlerRequestID = RequestID(next.Context())
+		})
+
 		if calls != 2 {
 			t.Fatalf("NewRequestID calls = %d, want 2", calls)
 		}
-		const lastResortID = "00000000000000000000000000000000"
-		assertRequestIDSurfaces(t, handlerRequestID, lastResortID, recorder)
-		if handlerCorrelationID != lastResortID {
-			t.Fatalf("CorrelationID = %q, want last-resort request ID %q", handlerCorrelationID, lastResortID)
+		if !handlerCalled {
+			t.Fatal("handler was not called")
+		}
+		assertGeneratedRequestID(t, handlerRequestID)
+		assertRequestIDSurfaces(t, handlerRequestID, handlerRequestID, recorder)
+	})
+
+	t.Run("validator panic rejects caller and preserves traffic", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+			defaultRequestIDHeader: "caller",
+		})
+		var handlerCalled bool
+		RequestContext(RequestContextConfig{
+			NewRequestID: func() string { return "generated" },
+			ValidateRequestID: func(string) bool {
+				panic("validator secret")
+			},
+		})(ctx, func(next huma.Context) {
+			handlerCalled = true
+			if got := RequestID(next.Context()); got != "generated" {
+				t.Fatalf("RequestID = %q, want generated", got)
+			}
+		})
+
+		if !handlerCalled {
+			t.Fatal("handler was not called")
+		}
+		if got := recorder.Header().Get(defaultRequestIDHeader); got != "generated" {
+			t.Fatalf("response request ID header = %q, want generated", got)
 		}
 	})
 }
