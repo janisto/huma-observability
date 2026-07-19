@@ -35,6 +35,7 @@ type RequestContextConfig struct {
 	RequestIDHeader       string
 	TraceparentHeader     string
 	TracestateHeader      string
+	TraceContextLevel     TraceContextLevel
 	ResponseHeader        string
 	DisableResponseHeader bool
 	NewRequestID          func() string
@@ -98,6 +99,11 @@ func Trace(ctx context.Context) TraceContext {
 }
 
 func normalizeRequestContextConfig(config RequestContextConfig) RequestContextConfig {
+	level, err := ResolveTraceContextLevel(config.TraceContextLevel)
+	if err != nil {
+		panic(err)
+	}
+	config.TraceContextLevel = level
 	if config.RequestIDHeader == "" {
 		config.RequestIDHeader = defaultRequestIDHeader
 	}
@@ -121,36 +127,40 @@ func normalizeRequestContextConfig(config RequestContextConfig) RequestContextCo
 
 func buildRequestMetadata(ctx huma.Context, config RequestContextConfig) *requestMetadata {
 	return buildRequestMetadataFromHeaders(
-		ctx.Header(config.RequestIDHeader),
-		ctx.Header(config.TraceparentHeader),
-		combinedHeaderValues(ctx, config.TracestateHeader),
+		rawHeaderValues(ctx, config.RequestIDHeader),
+		rawHeaderValues(ctx, config.TraceparentHeader),
+		rawHeaderValues(ctx, config.TracestateHeader),
 		config,
 	)
 }
 
-func combinedHeaderValues(ctx huma.Context, name string) string {
+func rawHeaderValues(ctx huma.Context, name string) []string {
 	var values []string
 	ctx.EachHeader(func(headerName, value string) {
 		if strings.EqualFold(headerName, name) {
 			values = append(values, value)
 		}
 	})
-	return strings.Join(values, ",")
+	return values
 }
 
 func buildRequestMetadataFromHeaders(
-	requestID string,
-	traceparent string,
-	tracestate string,
+	requestIDValues []string,
+	traceparentValues []string,
+	tracestateValues []string,
 	config RequestContextConfig,
 ) *requestMetadata {
-	if !config.ValidateRequestID(requestID) {
+	requestID, singleRequestID := singleRawHeaderValue(requestIDValues)
+	if !singleRequestID || !validRequestID(requestID, config.ValidateRequestID) {
 		requestID = newValidRequestID(config.NewRequestID, config.ValidateRequestID)
 	}
 
-	trace, ok := ParseTraceparent(traceparent)
-	if ok {
-		if len(tracestate) <= maxTracestateLen {
+	var trace TraceContext
+	if traceparent, singleTraceparent := singleRawHeaderValue(traceparentValues); singleTraceparent {
+		trace, _ = ParseTraceparentWithLevel(traceparent, config.TraceContextLevel)
+	}
+	if trace.Valid {
+		if tracestate, valid := parseTracestate(tracestateValues, config.TraceContextLevel); valid {
 			trace.Tracestate = tracestate
 		}
 	}
@@ -167,12 +177,23 @@ func buildRequestMetadataFromHeaders(
 	}
 }
 
-func ensureRequestMetadata(ctx huma.Context, preset Preset) (*requestMetadata, huma.Context) {
+func singleRawHeaderValue(values []string) (string, bool) {
+	if len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func ensureRequestMetadata(
+	ctx huma.Context,
+	preset Preset,
+	traceContextLevel TraceContextLevel,
+) (*requestMetadata, huma.Context) {
 	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
 		return metadata, ctx
 	}
 	existing := metadataFromContext(ctx.Context())
-	config := normalizeRequestContextConfig(RequestContextConfig{})
+	config := normalizeRequestContextConfig(RequestContextConfig{TraceContextLevel: traceContextLevel})
 	metadata := buildRequestMetadata(ctx, config)
 	if existing != nil && existing.Logger != nil {
 		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, preset)
@@ -226,16 +247,20 @@ func metadataFromContext(ctx context.Context) *requestMetadata {
 func newValidRequestID(newRequestID func() string, validate func(string) bool) string {
 	for range 2 {
 		id := newRequestID()
-		if validate(id) {
+		if validRequestID(id, validate) {
 			return id
 		}
 	}
 
 	id := fallbackRequestID()
-	if validate(id) {
+	if validRequestID(id, validate) {
 		return id
 	}
 	return "00000000000000000000000000000000"
+}
+
+func validRequestID(value string, validate func(string) bool) bool {
+	return DefaultValidateRequestID(value) && validate(value)
 }
 
 func defaultNewRequestID() string {

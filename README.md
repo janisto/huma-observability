@@ -102,20 +102,27 @@ import (
 )
 
 func setup(api huma.API) error {
+	profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
+	if err != nil {
+		return err
+	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset: obs.PresetGCP,
+		Preset:            obs.PresetGCP,
+		GCPProfileVersion: profileVersion,
 	})
 	if err != nil {
 		return err
 	}
 
 	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
+		Logger:            logger,
+		Preset:            obs.PresetGCP,
+		TraceContextLevel: obs.TraceContextLevel1,
 	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
+		Logger:            logger,
+		Preset:            obs.PresetGCP,
+		GCPProfileVersion: profileVersion,
 	}))
 
 	return nil
@@ -193,11 +200,26 @@ intentionally outside an HTTP request.
 W3C `traceparent` is the only trace context input parsed by this package. When
 the header is valid, the W3C trace ID becomes the request `correlation_id` and
 provider-specific trace field source. When the header is missing or invalid,
-`correlation_id` falls back to `request_id`.
+`correlation_id` falls back to `request_id`. Level 1 is the default. Select
+the pinned Level 2 mode explicitly and use the same immutable level for request
+context and access logging:
 
-Multiple `tracestate` header fields are combined in wire order as required by
-W3C Trace Context. The combined value is retained only when it is at most 512
-bytes.
+```go
+const traceLevel = obs.TraceContextLevel2
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger, Preset: obs.PresetGCP, TraceContextLevel: traceLevel,
+}))
+api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+	Logger: logger, Preset: obs.PresetGCP, TraceContextLevel: traceLevel,
+}))
+```
+
+`ResolveTraceContextLevel(0)` exposes the effective default. Unsupported
+levels fail during middleware construction. Exactly one raw `traceparent`
+field-line is eligible. Multiple `tracestate` fields are combined in wire
+order and validated with the selected level's complete key/value grammar,
+unique keys, at most 32 members, and a 512-byte raw ceiling. Invalid
+`tracestate` is discarded without discarding a valid `traceparent`.
 
 This means every log line gets a stable grouping key:
 
@@ -210,6 +232,7 @@ The package also emits common trace fields when a valid trace exists:
 - `parent_id`
 - `trace_flags`
 - `trace_sampled`
+- `trace_id_random` only in explicit Level 2 mode
 
 Provider-specific propagation headers such as `X-Cloud-Trace-Context`,
 `X-Amzn-Trace-Id`, and Azure's legacy `Request-Id` header are intentionally not
@@ -230,8 +253,13 @@ Use the same preset for `NewLogger`, `RequestContext`, `AccessLogger`, and
 ### Google Cloud
 
 ```go
+profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
+if err != nil {
+	return err
+}
 logger, err := obs.NewLogger(obs.LoggerConfig{
-	Preset: obs.PresetGCP,
+	Preset:            obs.PresetGCP,
+	GCPProfileVersion: profileVersion,
 })
 if err != nil {
 	return err
@@ -242,8 +270,9 @@ api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
 	Preset: obs.PresetGCP,
 }))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger: logger,
-	Preset: obs.PresetGCP,
+	Logger:            logger,
+	Preset:            obs.PresetGCP,
+	GCPProfileVersion: profileVersion,
 }))
 ```
 
@@ -257,6 +286,15 @@ The GCP preset emits Cloud Logging-friendly JSON:
 The middleware does not emit `logging.googleapis.com/spanId` from a W3C
 `parent-id`. A log span ID must come from a real current span; the incoming
 parent ID is not the same semantic value.
+
+The installed package supports GCP profile `0.1.0`. An omitted version resolves
+to the newest supported version during construction; an exact pin uses
+`obs.GCPProfileVersionV0_1_0`. `ResolveGCPProfileVersion` exposes the effective
+version for diagnostics and coherent logger/access configuration. Resolution
+does not query Google Cloud, a registry, or the network. `NewLogger` returns an
+error for an invalid selection; `AccessLogger` panics immediately during
+middleware construction because its established constructor has no error
+return.
 
 ### AWS
 
@@ -299,6 +337,7 @@ Request metadata fields:
 | `parent_id` | The W3C parent ID from `traceparent`. |
 | `trace_flags` | The W3C trace flags value. |
 | `trace_sampled` | Boolean value derived from the sampled flag. |
+| `trace_id_random` | Level 2 boolean derived from bit one of the trace flags; absent in Level 1. |
 
 Provider-specific fields:
 
@@ -311,14 +350,26 @@ Provider-specific fields:
 Huma access log fields:
 
 - `method`
-- `path`
+- `path` when `CapturePath` is enabled
 - `path_template`
 - `operation_id`
-- `status`
+- `status`, only when Huma has established it before this middleware returns
 - `duration_ms`
-- `remote_ip`
-- `user_agent`
+- `terminal_reason`, set to `panic` for an escaping panic
+- `peer_ip` when `CapturePeerIP` is enabled; this is the direct transport peer
+- `user_agent` when `CaptureUserAgent` is enabled
 - `httpRequest` for GCP
+
+Huma operation paths already use the portable whole-segment `{name}` form.
+Only valid canonical operation paths are emitted. The selected Huma middleware
+boundary runs for registered operations, so it does not claim unmatched-route
+or router-specific catch-all access records; those remain router-owned.
+
+The three capture options are independent and default to false. Selecting GCP
+does not enable them. When path capture is enabled, GCP
+`httpRequest.requestUrl` is exactly the sanitized path: it never contains a
+scheme, authority, query, or fragment. GCP `remoteIp` and `userAgent` appear
+only with their corresponding portable opt-ins.
 
 Logger keys:
 
@@ -327,7 +378,8 @@ Logger keys:
 
 `AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
 access logs. Fields using package-owned or provider-reserved keys are ignored to
-avoid duplicate core keys in the JSON output.
+avoid duplicate core keys in the JSON output. If the returned Zap field slice
+repeats a custom key, the first value wins.
 
 ## Request IDs
 
@@ -336,11 +388,15 @@ Default `RequestContext` and `HTTPRequestContext` behavior:
 - Request ID header: `X-Request-Id`.
 - Trace header: `traceparent`.
 - Tracestate header: `tracestate`.
+- Trace Context level: W3C Level 1.
 - Response request ID header: same as the request ID header.
 - Generated request IDs: 16 random bytes encoded as lowercase hex.
 
-Invalid incoming request IDs are ignored and replaced. Invalid `traceparent`
-values are ignored for correlation while request processing continues.
+Incoming request IDs use 1–128 ASCII letters, digits, `-`, `.`, `_`, and
+`~`. A custom validator may further restrict that baseline but cannot admit
+an unsafe value. Multiple raw request-ID or `traceparent` field-lines are
+ambiguous and rejected. Invalid input is replaced or ignored while request
+processing continues.
 
 `CorrelationID(ctx)` returns the same value written to `correlation_id`: the
 W3C trace ID when a valid `traceparent` exists, otherwise the request ID.
@@ -360,17 +416,37 @@ stdout and Zap internal errors to stderr.
 Useful options:
 
 - `Preset`: selects generic, GCP, AWS, or Azure field naming.
+- `GCPProfileVersion`: optionally pins a supported GCP profile; omission selects
+  the newest installed version when `PresetGCP` is selected.
 - `Level`: sets the Zap level enabler. Defaults to info.
 - `Writer`: overrides the application log destination.
 - `ErrorWriter`: overrides Zap's internal error destination.
 - `AddCaller`: includes Zap caller fields.
 - `Development`: enables Zap development behavior.
 
+`AccessLoggerConfig` separately provides `GCPProfileVersion`,
+`TraceContextLevel`, `CapturePath`, `CapturePeerIP`, `CaptureUserAgent`,
+the injectable monotonic `Now` clock, status-level mapping, and
+collision-filtered extra fields.
+
+Operation defaults are route metadata, not evidence that a response status was
+established. Access records therefore omit `status` when `ctx.Status()` is
+still zero instead of guessing the operation default or 200. In that normal
+status-less case the level is info and the status callback is not invoked.
+Handler errors converted by Huma into completed 4xx/5xx responses remain normal
+responses and omit `terminal_reason`.
+
 ## Panic Behavior
 
-`AccessLogger` logs a `500` access log when downstream Huma middleware or
-handlers panic, then re-panics. It does not recover the request or hide the
-panic from upstream recovery middleware.
+`AccessLogger` logs an error access record with terminal reason `panic` when
+downstream Huma middleware or handlers panic, then re-panics. Status is retained
+only if Huma had already established one; no 500 is invented. The original
+panic remains the propagated value even if access-log enrichment or writing
+also panics. On normal handler completion, panicking clock, status-mapper,
+enrichment, and writer paths are contained; safe defaults are used when
+possible, handler behavior is unchanged, and failed writes are not retried. The
+package does not recover the request or hide a downstream panic from upstream
+recovery middleware.
 
 ## Optional Local Wrapper
 
@@ -411,6 +487,10 @@ separately.
 
 ## References
 
+- W3C Trace Context Level 1 Recommendation:
+  https://www.w3.org/TR/trace-context/
+- W3C Trace Context Level 2 Candidate Recommendation pinned by this package:
+  https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/
 - Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
   trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
 - Google Cloud changed raw `TRACE_ID` to the preferred `LogEntry.trace` format

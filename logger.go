@@ -3,6 +3,7 @@ package obs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -28,18 +29,49 @@ const (
 	PresetAzure Preset = "azure"
 )
 
+// GCPProfileVersion identifies a specification-defined Google Cloud profile.
+type GCPProfileVersion string
+
+const (
+	// GCPProfileVersionV0_1_0 is the current supported Google Cloud profile.
+	GCPProfileVersionV0_1_0 GCPProfileVersion = "0.1.0"
+)
+
+// ResolveGCPProfileVersion resolves an omitted GCP profile version to the
+// newest version supported by this installed package.
+func ResolveGCPProfileVersion(preset Preset, version GCPProfileVersion) (GCPProfileVersion, error) {
+	if preset != PresetGCP {
+		if version != "" {
+			return "", errors.New("observability: GCP profile version requires GCP preset")
+		}
+		return "", nil
+	}
+
+	if version == "" {
+		return GCPProfileVersionV0_1_0, nil
+	}
+	if version != GCPProfileVersionV0_1_0 {
+		return "", fmt.Errorf("observability: unsupported GCP profile version %q", version)
+	}
+	return version, nil
+}
+
 // LoggerConfig configures NewLogger.
 type LoggerConfig struct {
-	Preset      Preset
-	Level       zapcore.LevelEnabler
-	Writer      io.Writer
-	ErrorWriter io.Writer
-	AddCaller   bool
-	Development bool
+	Preset            Preset
+	GCPProfileVersion GCPProfileVersion
+	Level             zapcore.LevelEnabler
+	Writer            io.Writer
+	ErrorWriter       io.Writer
+	AddCaller         bool
+	Development       bool
 }
 
 // NewLogger creates a JSON Zap logger for the selected preset.
 func NewLogger(config LoggerConfig) (*zap.Logger, error) {
+	if _, err := ResolveGCPProfileVersion(config.Preset, config.GCPProfileVersion); err != nil {
+		return nil, err
+	}
 	levelKey, levelEncoder, err := presetLevelConfig(config.Preset)
 	if err != nil {
 		return nil, err

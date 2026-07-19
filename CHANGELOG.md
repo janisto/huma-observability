@@ -7,6 +7,40 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Added GCP profile `0.1.0` selection with newest-supported default resolution,
+  exact pinning, and effective-version introspection.
+- Added independent `CapturePath`, `CapturePeerIP`, and `CaptureUserAgent`
+  access-log opt-ins.
+- Added immutable W3C Trace Context Level 1/Level 2 selection, effective-level
+  resolution, complete selected-level `tracestate` validation, and Level 2
+  `trace_id_random` projection.
+
+### Changed
+
+- **Breaking:** Changed access logging to omit raw path, direct peer IP, and
+  user agent by default. Applications that need the previous fields must enable
+  the matching capture options.
+- **Breaking:** Renamed the opt-in portable direct-peer field from `remote_ip`
+  to `peer_ip` and narrowed GCP `httpRequest.requestUrl` to the sanitized
+  query-free path.
+- Aligned the GCP health fixture to operation `health_check` and deterministic
+  12.5 ms access timing.
+- **Breaking:** Reject duplicate raw request-ID and `traceparent` field-lines,
+  and prevent custom request-ID validators from admitting values outside the
+  package's safe baseline grammar.
+- **Breaking:** Stop inferring operation-default, 200, and panic 500 statuses
+  when Huma has not established a status. Escaping panics now use
+  `terminal_reason: "panic"`, force `ERROR`, and retain the original panic
+  even if access-log enrichment also panics.
+- Contain panics from the access clock, status mapper, enrichment callback, and
+  writer without changing handler behavior; keep the first repeated custom
+  field so package-controlled JSON contains no duplicate member names.
+- Validate Huma operation paths before emitting canonical `path_template`
+  values; unmatched and router-specific catch-all requests remain outside the
+  operation middleware boundary.
+
 ## [1.0.1] - 2026-07-17
 
 ### Added

@@ -26,7 +26,14 @@ Every service follows the same shape:
 The canonical GCP wiring is:
 
 ```go
-logger, err := obs.NewLogger(obs.LoggerConfig{Preset: obs.PresetGCP})
+profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
+if err != nil {
+	panic(err)
+}
+logger, err := obs.NewLogger(obs.LoggerConfig{
+	Preset:            obs.PresetGCP,
+	GCPProfileVersion: profileVersion,
+})
 if err != nil {
 	panic(err)
 }
@@ -38,8 +45,9 @@ api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
 	Preset: obs.PresetGCP,
 }))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger: logger,
-	Preset: obs.PresetGCP,
+	Logger:            logger,
+	Preset:            obs.PresetGCP,
+	GCPProfileVersion: profileVersion,
 }))
 ```
 
@@ -64,7 +72,7 @@ curl -i \
 
 The request ID remains `demo-123`; `correlation_id` becomes the W3C trace ID.
 The handler and access records contain the same correlation fields. The access
-record also contains `httpRequest`, `/health` as the path template, `get-health`
+record also contains `httpRequest`, `/health` as the path template, `health_check`
 as Huma's operation ID, and status 200.
 
 The health handler writes service-owned `INFO` and `DEBUG` events before the
@@ -86,11 +94,25 @@ repository's test boundary.
 Representative GCP fields:
 
 ```json
-{"severity":"INFO","message":"request completed","request_id":"demo-123","correlation_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace_sampled":true,"method":"GET","path":"/health","path_template":"/health","operation_id":"get-health","status":200}
+{"severity":"INFO","message":"request completed","request_id":"demo-123","correlation_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace_sampled":true,"method":"GET","duration_ms":12.5,"path_template":"/health","operation_id":"health_check","status":200,"httpRequest":{"requestMethod":"GET","status":200,"latency":"0.0125s"}}
 ```
 
 The package does not create spans and therefore does not manufacture
 `logging.googleapis.com/spanId` from the incoming parent ID.
+
+W3C Trace Context Level 1 is the default. To enable the pinned Level 2 mode,
+configure `TraceContextLevel2` on both `RequestContext` and `AccessLogger`.
+Level 2 adds `trace_id_random`, derived from bit one of the preserved
+two-character `trace_flags`. Unsupported levels fail at middleware
+construction. Duplicate request-ID or `traceparent` field-lines are rejected
+as ambiguous, and `tracestate` is retained only after complete selected-level
+grammar, duplicate-key, 32-member, and 512-byte validation.
+
+Raw path, direct peer IP, and user agent capture are disabled by default and
+have independent `AccessLoggerConfig` opt-ins. The GCP profile does not change
+those defaults. If path capture is enabled, `httpRequest.requestUrl` is the
+query-free path only. The installed unpinned GCP profile resolves to `0.1.0` at
+construction; pass `GCPProfileVersionV0_1_0` to pin it explicitly.
 
 ## Provider-Neutral JSON
 
@@ -171,3 +193,4 @@ levels, and error information.
 - [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
 - [Google Cloud structured logging](https://cloud.google.com/logging/docs/structured-logging)
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/)
+- [W3C Trace Context Level 2](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)

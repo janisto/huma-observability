@@ -298,6 +298,57 @@ func TestNewLoggerRejectsUnknownPreset(t *testing.T) {
 	}
 }
 
+func TestGCPProfileVersionResolutionAndLoggerValidation(t *testing.T) {
+	t.Parallel()
+
+	latest, err := ResolveGCPProfileVersion(PresetGCP, "")
+	if err != nil {
+		t.Fatalf("ResolveGCPProfileVersion latest returned error: %v", err)
+	}
+	if latest != GCPProfileVersionV0_1_0 {
+		t.Fatalf("latest GCP profile = %q, want %q", latest, GCPProfileVersionV0_1_0)
+	}
+	pinned, err := ResolveGCPProfileVersion(PresetGCP, GCPProfileVersionV0_1_0)
+	if err != nil {
+		t.Fatalf("ResolveGCPProfileVersion pin returned error: %v", err)
+	}
+	if pinned != GCPProfileVersionV0_1_0 {
+		t.Fatalf("pinned GCP profile = %q, want %q", pinned, GCPProfileVersionV0_1_0)
+	}
+
+	tests := []struct {
+		name   string
+		config LoggerConfig
+		want   string
+	}{
+		{
+			name:   "unsupported version",
+			config: LoggerConfig{Preset: PresetGCP, GCPProfileVersion: "0.2.0"},
+			want:   `observability: unsupported GCP profile version "0.2.0"`,
+		},
+		{
+			name:   "cross-preset version",
+			config: LoggerConfig{Preset: PresetAWS, GCPProfileVersion: GCPProfileVersionV0_1_0},
+			want:   "observability: GCP profile version requires GCP preset",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			logger, err := NewLogger(tt.config)
+			if err == nil {
+				t.Fatal("NewLogger accepted invalid GCP profile selection")
+			}
+			if logger != nil {
+				t.Fatalf("NewLogger returned partial logger: %#v", logger)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewLoggerLocksWriterForConcurrentUse(t *testing.T) {
 	t.Parallel()
 

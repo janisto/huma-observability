@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zapcore"
 
@@ -17,7 +18,7 @@ import (
 func TestGCPHealthRouteEmitsCorrelatedApplicationAndAccessRecords(t *testing.T) {
 	t.Parallel()
 
-	response, records := exerciseGCPHealthRoute(t, zapcore.DebugLevel)
+	response, records := exerciseHealthRoute(t, obs.PresetGCP, zapcore.DebugLevel)
 	assertHealthResponse(t, response)
 
 	if got := len(records); got != 3 {
@@ -51,20 +52,30 @@ func TestGCPHealthRouteEmitsCorrelatedApplicationAndAccessRecords(t *testing.T) 
 	assertLogField(t, access, "severity", "INFO")
 	assertLogField(t, access, "message", "request completed")
 	assertLogField(t, access, "method", http.MethodGet)
-	assertLogField(t, access, "path", "/health")
+	assertLogField(t, access, "duration_ms", float64(12.5))
 	assertLogField(t, access, "path_template", "/health")
-	assertLogField(t, access, "operation_id", "get-health")
+	assertLogField(t, access, "operation_id", "health_check")
 	assertLogField(t, access, "status", float64(http.StatusOK))
+	for _, privateField := range []string{"path", "peer_ip", "remote_ip", "user_agent"} {
+		if _, ok := access[privateField]; ok {
+			t.Fatalf("access record unexpectedly contains privacy field %q: %#v", privateField, access)
+		}
+	}
 
 	httpRequest, ok := access["httpRequest"].(map[string]any)
 	if !ok {
 		t.Fatalf("access httpRequest = %#v, want object", access["httpRequest"])
 	}
 	assertLogField(t, httpRequest, "requestMethod", http.MethodGet)
-	assertLogField(t, httpRequest, "requestUrl", "http://example.com/health")
 	assertLogField(t, httpRequest, "status", float64(http.StatusOK))
-	if _, ok := httpRequest["latency"].(string); !ok {
-		t.Fatalf("access httpRequest latency = %#v, want string", httpRequest["latency"])
+	assertLogField(t, httpRequest, "latency", "0.0125s")
+	for _, privateField := range []string{"requestUrl", "remoteIp", "userAgent"} {
+		if _, ok := httpRequest[privateField]; ok {
+			t.Fatalf("httpRequest unexpectedly contains privacy field %q: %#v", privateField, httpRequest)
+		}
+	}
+	if len(httpRequest) != 3 {
+		t.Fatalf("httpRequest = %#v, want exact privacy-safe projection", httpRequest)
 	}
 
 	for _, applicationOnly := range []string{
@@ -84,7 +95,7 @@ func TestGCPHealthRouteEmitsCorrelatedApplicationAndAccessRecords(t *testing.T) 
 func TestGCPHealthRouteRespectsInfoLevel(t *testing.T) {
 	t.Parallel()
 
-	response, records := exerciseGCPHealthRoute(t, zapcore.InfoLevel)
+	response, records := exerciseHealthRoute(t, obs.PresetGCP, zapcore.InfoLevel)
 	assertHealthResponse(t, response)
 
 	if got := len(records); got != 2 {
@@ -109,14 +120,72 @@ func TestGCPHealthRouteRespectsInfoLevel(t *testing.T) {
 	}
 }
 
-func exerciseGCPHealthRoute(t *testing.T, level zapcore.Level) (*httptest.ResponseRecorder, []map[string]any) {
+func TestCoreHealthRouteHasExactPortableProjection(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		level        zapcore.Level
+		wantMessages []string
+	}{
+		{name: "debug", level: zapcore.DebugLevel, wantMessages: []string{"health check", "dependency check", "request completed"}},
+		{name: "info", level: zapcore.InfoLevel, wantMessages: []string{"health check", "request completed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, records := exerciseHealthRoute(t, obs.PresetDefault, test.level)
+			assertHealthResponse(t, response)
+			if got := len(records); got != len(test.wantMessages) {
+				t.Fatalf("log record count = %d, want %d; records=%#v", got, len(test.wantMessages), records)
+			}
+			for index, message := range test.wantMessages {
+				assertLogField(t, records[index], "message", message)
+				assertLogField(t, records[index], "request_id", "health-example")
+				assertLogField(t, records[index], "correlation_id", "health-example")
+				wantLevel := "INFO"
+				if message == "dependency check" {
+					wantLevel = "DEBUG"
+				}
+				assertLogField(t, records[index], "level", wantLevel)
+				if _, ok := records[index]["severity"]; ok {
+					t.Fatalf("core record contains GCP severity: %#v", records[index])
+				}
+			}
+			assertLogField(t, records[0], "service_name", "example-service")
+			assertLogField(t, records[0], "service_version", "1.0.0")
+			assertLogField(t, records[0], "health_status", "ok")
+			access := records[len(records)-1]
+			assertLogField(t, access, "method", http.MethodGet)
+			assertLogField(t, access, "duration_ms", float64(12.5))
+			assertLogField(t, access, "path_template", "/health")
+			assertLogField(t, access, "operation_id", "health_check")
+			assertLogField(t, access, "status", float64(http.StatusOK))
+			if _, ok := access["httpRequest"]; ok {
+				t.Fatalf("core access record contains GCP httpRequest: %#v", access)
+			}
+			for _, privateField := range []string{"path", "peer_ip", "remote_ip", "user_agent"} {
+				if _, ok := access[privateField]; ok {
+					t.Fatalf("core access record contains privacy field %q: %#v", privateField, access)
+				}
+			}
+		})
+	}
+}
+
+func exerciseHealthRoute(
+	t *testing.T,
+	preset obs.Preset,
+	level zapcore.Level,
+) (*httptest.ResponseRecorder, []map[string]any) {
 	t.Helper()
 
 	var output bytes.Buffer
+	var profileVersion obs.GCPProfileVersion
+	if preset == obs.PresetGCP {
+		profileVersion = obs.GCPProfileVersionV0_1_0
+	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset: obs.PresetGCP,
-		Level:  level,
-		Writer: &output,
+		Preset:            preset,
+		GCPProfileVersion: profileVersion,
+		Level:             level,
+		Writer:            &output,
 	})
 	if err != nil {
 		t.Fatalf("NewLogger returned error: %v", err)
@@ -125,9 +194,22 @@ func exerciseGCPHealthRoute(t *testing.T, level zapcore.Level) (*httptest.Respon
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	request.Header.Set("X-Request-Id", "health-example")
 	response := httptest.NewRecorder()
-	newGCPHandler(logger).ServeHTTP(response, request)
+	newHandler(logger, preset, profileVersion, fixedGCPHealthClock()).ServeHTTP(response, request)
 
 	return response, decodeLogRecords(t, output.String())
+}
+
+func fixedGCPHealthClock() func() time.Time {
+	values := []time.Time{
+		time.Unix(1, 0),
+		time.Unix(1, int64(12_500*time.Microsecond)),
+	}
+	index := 0
+	return func() time.Time {
+		value := values[index]
+		index++
+		return value
+	}
 }
 
 func assertHealthResponse(t *testing.T, response *httptest.ResponseRecorder) {
@@ -151,9 +233,15 @@ func assertHealthResponse(t *testing.T, response *httptest.ResponseRecorder) {
 func decodeLogRecords(t *testing.T, output string) []map[string]any {
 	t.Helper()
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if output == "" || !strings.HasSuffix(output, "\n") {
+		t.Fatalf("stdout is not non-empty LF-terminated NDJSON: %q", output)
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 	records := make([]map[string]any, 0, len(lines))
 	for _, line := range lines {
+		if line == "" || strings.HasSuffix(line, "\r") {
+			t.Fatalf("stdout contains an empty or CRLF NDJSON line: %q", output)
+		}
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatalf("stdout line is not valid JSON: %v\n%s", err, line)
