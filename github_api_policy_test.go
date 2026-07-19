@@ -21,6 +21,12 @@ var (
 		`X-GitHub-Api-Version["']?[[:space:]]*[:=[:space:]]` +
 			`[[:space:]]*["']?2026-03-10\b`,
 	)
+	githubAPIHeaderName = regexp.MustCompile(`(?i)X-GitHub-Api-Version`)
+	githubClientAlias   = regexp.MustCompile(
+		`\b(?:const[[:space:]]+|let[[:space:]]+|var[[:space:]]+)?` +
+			`([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(?::=|=)[[:space:]]*` +
+			`(?:new[[:space:]]+)?[^\n]*(?:Octokit|GitHub|Github|octokit|github)\b`,
+	)
 )
 
 var automatedPolicyExtensions = map[string]bool{
@@ -48,22 +54,47 @@ func githubAPIPolicyViolations(files map[string]string) []string {
 			continue
 		}
 		lines := strings.Split(content, "\n")
+		aliases := githubAPICallerAliases(content)
 		for index, line := range lines {
-			if !githubRESTCaller.MatchString(line) {
+			if !isGitHubRESTCaller(line, aliases) {
 				continue
 			}
 			limit := min(len(lines), index+12)
 			end := index + 1
-			for end < limit && !githubRESTCaller.MatchString(lines[end]) {
+			for end < limit && !isGitHubRESTCaller(lines[end], aliases) {
 				end++
 			}
-			if !lockedGitHubHeader.MatchString(strings.Join(lines[index:end], "\n")) {
+			block := strings.Join(lines[index:end], "\n")
+			if len(githubAPIHeaderName.FindAllString(block, -1)) != 1 || !lockedGitHubHeader.MatchString(block) {
 				violations = append(violations, fmt.Sprintf("%s:%d", path, index+1))
 			}
 		}
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+func githubAPICallerAliases(content string) []string {
+	matches := githubClientAlias.FindAllStringSubmatch(content, -1)
+	aliases := make([]string, 0, len(matches))
+	for _, match := range matches {
+		aliases = append(aliases, match[1])
+	}
+	return aliases
+}
+
+func isGitHubRESTCaller(line string, aliases []string) bool {
+	if githubRESTCaller.MatchString(line) {
+		return true
+	}
+	for _, alias := range aliases {
+		for _, method := range []string{".rest", ".request(", ".paginate("} {
+			if strings.Contains(line, alias+method) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func repositoryPolicyFiles(t *testing.T) map[string]string {
@@ -140,6 +171,22 @@ func TestGitHubAPIPolicyFixtures(t *testing.T) {
 				"client.go": "github.request(\"GET /one\", " +
 					"header=\"X-GitHub-Api-Version: 2026-03-10\")\n" +
 					"github.request(\"GET /two\")",
+			},
+			expected: []string{"client.go:2"},
+		},
+		{
+			name: "conflicting versions in one caller",
+			files: map[string]string{
+				"client.go": "github.request(\"GET /one\", " +
+					"header=\"X-GitHub-Api-Version: 2026-03-10\")\n" +
+					"header=\"X-GitHub-Api-Version: 2022-11-28\"",
+			},
+			expected: []string{"client.go:1"},
+		},
+		{
+			name: "aliased octokit caller",
+			files: map[string]string{
+				"client.go": "const client = new Octokit()\nclient.request(\"GET /repo\")",
 			},
 			expected: []string{"client.go:2"},
 		},
