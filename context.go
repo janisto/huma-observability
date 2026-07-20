@@ -24,10 +24,11 @@ var fallbackRequestIDCounter atomic.Uint64
 type contextKey struct{}
 
 type requestMetadata struct {
-	RequestID     string
-	CorrelationID string
-	Trace         TraceContext
-	Logger        *zap.Logger
+	RequestID         string
+	CorrelationID     string
+	Trace             TraceContext
+	TraceContextLevel TraceContextLevel
+	Logger            *zap.Logger
 }
 
 // RequestContextConfig configures RequestContext middleware.
@@ -58,6 +59,8 @@ func RequestContext(config RequestContextConfig) func(huma.Context, func(huma.Co
 				metadata.Logger = loggerWithMetadata(existing.Logger, metadata, cfg.Preset)
 			}
 			ctx = huma.WithValue(ctx, contextKey{}, metadata)
+		} else {
+			requireMatchingTraceContextLevel(metadata, cfg.TraceContextLevel)
 		}
 		if cfg.Logger != nil && metadata.Logger == nil {
 			ctx = withRequestLogger(ctx, metadata, loggerWithMetadata(cfg.Logger, metadata, cfg.Preset))
@@ -99,6 +102,9 @@ func Trace(ctx context.Context) TraceContext {
 }
 
 func normalizeRequestContextConfig(config RequestContextConfig) RequestContextConfig {
+	if err := validatePreset(config.Preset); err != nil {
+		panic(err)
+	}
 	level, err := ResolveTraceContextLevel(config.TraceContextLevel)
 	if err != nil {
 		panic(err)
@@ -171,9 +177,17 @@ func buildRequestMetadataFromHeaders(
 	}
 
 	return &requestMetadata{
-		RequestID:     requestID,
-		CorrelationID: correlationID,
-		Trace:         trace,
+		RequestID:         requestID,
+		CorrelationID:     correlationID,
+		Trace:             trace,
+		TraceContextLevel: config.TraceContextLevel,
+	}
+}
+
+func requireMatchingTraceContextLevel(metadata *requestMetadata, expected TraceContextLevel) {
+	actual, err := ResolveTraceContextLevel(metadata.TraceContextLevel)
+	if err != nil || actual != expected {
+		panic("trace context level mismatch between RequestContext and AccessLogger")
 	}
 }
 
@@ -189,11 +203,12 @@ func ensureRequestMetadata(
 	preset Preset,
 	traceContextLevel TraceContextLevel,
 ) (*requestMetadata, huma.Context) {
+	config := normalizeRequestContextConfig(RequestContextConfig{TraceContextLevel: traceContextLevel})
 	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
+		requireMatchingTraceContextLevel(metadata, config.TraceContextLevel)
 		return metadata, ctx
 	}
 	existing := metadataFromContext(ctx.Context())
-	config := normalizeRequestContextConfig(RequestContextConfig{TraceContextLevel: traceContextLevel})
 	metadata := buildRequestMetadata(ctx, config)
 	if existing != nil && existing.Logger != nil {
 		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, preset)

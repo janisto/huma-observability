@@ -72,6 +72,12 @@ module path.
 
 ### Fixed
 
+- Preserve framework-valid route parameter names, including extended and
+  longer names, reject non-ASCII or control-bearing `traceparent` fields, and
+  reject trace-level disagreement regardless of middleware order. Reject
+  unknown presets consistently and prevent access enrichment from replacing
+  Zap-owned caller and Level 2 trace fields.
+
 - Preserve sampling while omitting the Level 2 random flag for unknown future
   `traceparent` versions.
 - Reject `zap.Inline` values from access-log `ExtraFields` so nested marshalers

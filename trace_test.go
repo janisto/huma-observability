@@ -12,7 +12,6 @@ func TestParseTraceparentValid(t *testing.T) {
 
 	futureVersion := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	maxLengthFutureVersion := futureVersion + "-" + strings.Repeat("a", maxTraceparentLen-len(futureVersion)-1)
-	multibyteAtLimit := futureVersion + "-" + strings.Repeat("é", 228)
 
 	tests := []struct {
 		name    string
@@ -45,13 +44,18 @@ func TestParseTraceparentValid(t *testing.T) {
 			sampled: true,
 		},
 		{
-			name:    "future version at maximum accepted length",
-			value:   maxLengthFutureVersion,
+			name:    "future version with printable lower boundary",
+			value:   futureVersion + "- ",
 			sampled: true,
 		},
 		{
-			name:    "future version at UTF-8 byte limit",
-			value:   multibyteAtLimit,
+			name:    "future version with printable upper boundary",
+			value:   futureVersion + "-~",
+			sampled: true,
+		},
+		{
+			name:    "future version at maximum accepted length",
+			value:   maxLengthFutureVersion,
 			sampled: true,
 		},
 	}
@@ -109,6 +113,9 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 		{name: "too short", value: valid[:len(valid)-1]},
 		{name: "future version over maximum length", value: overlongFutureVersion},
 		{name: "future version over UTF-8 byte limit", value: multibyteOverLimit},
+		{name: "future version non-ASCII", value: futureVersion + "-opaque-ümlaut"},
+		{name: "future version control", value: futureVersion + "-opaque\x1f"},
+		{name: "future version delete", value: futureVersion + "-opaque\x7f"},
 		{name: "all-zero trace id", value: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"},
 		{name: "all-zero parent id", value: "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"},
 		{name: "invalid first separator", value: "00_4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},

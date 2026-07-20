@@ -36,6 +36,8 @@ func HTTPRequestContext(config HTTPRequestContextConfig) func(http.Handler) http
 					metadata.Logger = loggerWithMetadata(existing.Logger, metadata, cfg.preset)
 				}
 				ctx = contextWithRequestMetadata(ctx, metadata)
+			} else {
+				requireMatchingTraceContextLevel(metadata, cfg.requestConfig.TraceContextLevel)
 			}
 
 			if cfg.logger != nil && metadata.Logger == nil {
@@ -57,6 +59,9 @@ type normalizedHTTPRequestContextConfig struct {
 }
 
 func normalizeHTTPRequestContextConfig(config HTTPRequestContextConfig) normalizedHTTPRequestContextConfig {
+	if err := validatePreset(config.Preset); err != nil {
+		panic(err)
+	}
 	requestConfig := normalizeRequestContextConfig(RequestContextConfig{
 		RequestIDHeader:       config.RequestIDHeader,
 		TraceparentHeader:     config.TraceparentHeader,

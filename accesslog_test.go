@@ -217,7 +217,9 @@ func TestCanonicalRouteTemplateCurrentHumaForms(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"A", "Z", "a", "z", "_", "a0", "a9", strings.Repeat("a", 64)} {
+	for _, name := range []string{
+		"A", "_", "0item", "item-id", "item.name", strings.Repeat("a", 65),
+	} {
 		t.Run("valid-name-"+name, func(t *testing.T) {
 			t.Parallel()
 			native := "/items/{" + name + "}"
@@ -226,11 +228,44 @@ func TestCanonicalRouteTemplateCurrentHumaForms(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"", "0a", "9a", "@a", "[a", "`a", "{a", "a.", "a:", strings.Repeat("a", 65)} {
+	for _, name := range []string{"", "{a", "a}", "a*", "a?", "a#", "a\nforged"} {
 		t.Run("invalid-name-"+name, func(t *testing.T) {
 			t.Parallel()
 			if got, ok := canonicalRouteTemplate("/items/{" + name + "}"); ok || got != "" {
 				t.Fatalf("invalid parameter name %q produced (%q, %v)", name, got, ok)
+			}
+		})
+	}
+}
+
+func TestComposedMiddlewareRejectsTraceContextLevelMismatchInEitherOrder(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name         string
+		requestLevel TraceContextLevel
+		accessLevel  TraceContextLevel
+		requestOuter bool
+	}{
+		{name: "request outer", requestLevel: TraceContextLevel1, accessLevel: TraceContextLevel2, requestOuter: true},
+		{name: "access outer", requestLevel: TraceContextLevel1, accessLevel: TraceContextLevel2},
+		{name: "reverse levels request outer", requestLevel: TraceContextLevel2, accessLevel: TraceContextLevel1, requestOuter: true},
+		{name: "reverse levels access outer", requestLevel: TraceContextLevel2, accessLevel: TraceContextLevel1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, _ := newHumaTestContext(http.MethodGet, "/test", nil)
+			request := RequestContext(RequestContextConfig{TraceContextLevel: tt.requestLevel})
+			access := AccessLogger(AccessLoggerConfig{TraceContextLevel: tt.accessLevel})
+			defer func() {
+				if got := recover(); got != "trace context level mismatch between RequestContext and AccessLogger" {
+					t.Fatalf("mismatch panic = %v", got)
+				}
+			}()
+			if tt.requestOuter {
+				request(ctx, func(next huma.Context) { access(next, func(huma.Context) {}) })
+			} else {
+				access(ctx, func(next huma.Context) { request(next, func(huma.Context) {}) })
 			}
 		})
 	}
@@ -256,20 +291,47 @@ func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 	) (*testOutput, error) {
 		return &testOutput{Body: testBody{OK: true}}, nil
 	})
+	huma.Register(api, huma.Operation{
+		OperationID: "get_extended",
+		Method:      http.MethodGet,
+		Path:        "/extended/{item-id}",
+	}, func(context.Context, *struct {
+		ItemID string `path:"item-id"`
+	},
+	) (*testOutput, error) {
+		return &testOutput{Body: testBody{OK: true}}, nil
+	})
+	huma.Register(api, huma.Operation{
+		OperationID: "get_long",
+		Method:      http.MethodGet,
+		Path:        "/long/{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}",
+	}, func(context.Context, *struct {
+		Value string `path:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`
+	},
+	) (*testOutput, error) {
+		return &testOutput{Body: testBody{OK: true}}, nil
+	})
 
-	for _, target := range []string{"/items/tenant-a", "/items/tenant-b"} {
+	for _, target := range []string{"/items/tenant-a", "/items/tenant-b", "/extended/value", "/long/value"} {
 		if response := api.Get(target); response.Code != http.StatusOK {
 			t.Fatalf("GET %s status = %d, want 200", target, response.Code)
 		}
 	}
 	entries := decodeLogLines(t, buffer.String())
-	if len(entries) != 2 {
-		t.Fatalf("log line count = %d, want 2", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("log line count = %d, want 4", len(entries))
 	}
-	for _, entry := range entries {
+	for _, entry := range entries[:2] {
 		assertAccessField(t, entry, "path_template", "/items/{item_id}")
 		assertAccessField(t, entry, "operation_id", "get_item")
 	}
+	assertAccessField(t, entries[2], "path_template", "/extended/{item-id}")
+	assertAccessField(t, entries[2], "operation_id", "get_extended")
+	assertAccessField(
+		t, entries[3], "path_template",
+		"/long/{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}",
+	)
+	assertAccessField(t, entries[3], "operation_id", "get_long")
 }
 
 func TestAccessMetadataStringsRejectEmptyDuplicateAndControlValues(t *testing.T) {
@@ -804,6 +866,7 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 		"level",
 		"severity",
 		"logger",
+		"caller",
 		"message",
 		"request_id",
 		"correlation_id",
@@ -811,6 +874,7 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 		"parent_id",
 		"trace_flags",
 		"trace_sampled",
+		"trace_id_random",
 		"xray_trace_id",
 		"operation_Id",
 		"operation_ParentId",
@@ -880,6 +944,49 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 	if got := strings.Count(line, `"tenant_id"`); got != 1 {
 		t.Fatalf("tenant_id key count = %d, want 1; line=%s", got, line)
 	}
+}
+
+func TestAccessLoggerProtectsCallerAndRandomTraceFieldsFromExtraFields(t *testing.T) {
+	t.Parallel()
+
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-02"
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer, AddCaller: true})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+		defaultTraceparentHeader: traceparent,
+	})
+
+	RequestContext(RequestContextConfig{TraceContextLevel: TraceContextLevel2})(ctx, func(ctx huma.Context) {
+		AccessLogger(AccessLoggerConfig{
+			Logger:            logger,
+			TraceContextLevel: TraceContextLevel2,
+			ExtraFields: func(huma.Context) []zap.Field {
+				return []zap.Field{
+					zap.String("caller", "forged.go:1"),
+					zap.Bool("trace_id_random", false),
+				}
+			},
+		})(ctx, func(huma.Context) {})
+	})
+
+	line := strings.TrimSpace(buffer.String())
+	if got := strings.Count(line, `"caller"`); got != 1 {
+		t.Fatalf("caller key count = %d, want 1; line=%s", got, line)
+	}
+	if got := strings.Count(line, `"trace_id_random"`); got != 1 {
+		t.Fatalf("trace_id_random key count = %d, want 1; line=%s", got, line)
+	}
+	if strings.Contains(line, "forged.go:1") {
+		t.Fatalf("forged caller leaked into access log: %s", line)
+	}
+	entry := decodeSingleLogLine(t, line)
+	if caller, ok := entry["caller"].(string); !ok || !strings.Contains(caller, "accesslog.go:") {
+		t.Fatalf("caller = %#v, want package access-log call site", entry["caller"])
+	}
+	assertAccessField(t, entry, "trace_id_random", true)
 }
 
 func TestAccessLoggerRejectsInlineExtraFields(t *testing.T) {

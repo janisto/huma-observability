@@ -69,6 +69,11 @@ func ParseTraceparentWithLevel(value string, level TraceContextLevel) (TraceCont
 	if value == "" || len(value) > maxTraceparentLen || len(value) < traceparentLen {
 		return TraceContext{}, false
 	}
+	for _, character := range []byte(value) {
+		if character < 0x20 || character > 0x7e {
+			return TraceContext{}, false
+		}
+	}
 	if value[2] != '-' || value[35] != '-' || value[52] != '-' {
 		return TraceContext{}, false
 	}

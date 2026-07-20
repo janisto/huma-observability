@@ -323,12 +323,11 @@ func canonicalRouteTemplate(native string) (string, bool) {
 }
 
 func isRouteParameterName(name string) bool {
-	if name == "" || len(name) > 64 {
+	if name == "" {
 		return false
 	}
-	for index, char := range []byte(name) {
-		letter := char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
-		if !letter && char != '_' && (index == 0 || char < '0' || char > '9') {
+	for _, character := range name {
+		if character < 0x20 || character == 0x7f || strings.ContainsRune("/{}*?#", character) {
 			return false
 		}
 	}
@@ -362,6 +361,7 @@ func isReservedLogField(key string) bool {
 		"level",
 		"severity",
 		"logger",
+		"caller",
 		"message",
 		"request_id",
 		"correlation_id",

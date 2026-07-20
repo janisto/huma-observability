@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
@@ -1014,6 +1016,60 @@ func TestHTTPRequestContextRequestIDLifecycle(t *testing.T) {
 	}
 }
 
+type callerContextKey struct{}
+
+func TestRequestContextMiddlewarePreservesCallerValueCancellationAndDeadline(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Huma", func(t *testing.T) {
+		t.Parallel()
+		parent, deadline := canceledCallerContext(t)
+		ctx, _ := newHumaTestContextWithParent(parent, http.MethodGet, "/test", nil)
+		RequestContext(RequestContextConfig{})(ctx, func(next huma.Context) {
+			assertCallerContextPreserved(t, next.Context(), deadline)
+		})
+	})
+
+	t.Run("net/http", func(t *testing.T) {
+		t.Parallel()
+		parent, deadline := canceledCallerContext(t)
+		handler := HTTPRequestContext(HTTPRequestContextConfig{})(http.HandlerFunc(
+			func(_ http.ResponseWriter, request *http.Request) {
+				assertCallerContextPreserved(t, request.Context(), deadline)
+			},
+		))
+		handler.ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequestWithContext(parent, http.MethodGet, "/http", nil),
+		)
+	})
+}
+
+func canceledCallerContext(t *testing.T) (context.Context, time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(time.Hour)
+	parent, cancel := context.WithDeadline(
+		context.WithValue(context.Background(), callerContextKey{}, "sentinel"),
+		deadline,
+	)
+	cancel()
+	return parent, deadline
+}
+
+func assertCallerContextPreserved(t *testing.T, ctx context.Context, deadline time.Time) {
+	t.Helper()
+	if got := ctx.Value(callerContextKey{}); got != "sentinel" {
+		t.Fatalf("caller context value = %#v, want sentinel", got)
+	}
+	gotDeadline, ok := ctx.Deadline()
+	if !ok || !gotDeadline.Equal(deadline) {
+		t.Fatalf("caller deadline = (%v, %v), want %v", gotDeadline, ok, deadline)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("caller cancellation = %v, want context.Canceled", ctx.Err())
+	}
+}
+
 func TestHTTPRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -1527,7 +1583,16 @@ func assertGeneratedRequestID(t *testing.T, requestID string) {
 }
 
 func newHumaTestContext(method, target string, headers map[string]string) (huma.Context, *httptest.ResponseRecorder) {
-	req := httptest.NewRequestWithContext(context.Background(), method, target, nil)
+	return newHumaTestContextWithParent(context.Background(), method, target, headers)
+}
+
+func newHumaTestContextWithParent(
+	parent context.Context,
+	method string,
+	target string,
+	headers map[string]string,
+) (huma.Context, *httptest.ResponseRecorder) {
+	req := httptest.NewRequestWithContext(parent, method, target, nil)
 	req.RemoteAddr = "203.0.113.9:4321"
 	for name, value := range headers {
 		req.Header.Set(name, value)

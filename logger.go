@@ -40,6 +40,9 @@ const (
 // ResolveGCPProfileVersion resolves an omitted GCP profile version to the
 // newest version supported by this installed package.
 func ResolveGCPProfileVersion(preset Preset, version GCPProfileVersion) (GCPProfileVersion, error) {
+	if err := validatePreset(preset); err != nil {
+		return "", err
+	}
 	if preset != PresetGCP {
 		if version != "" {
 			return "", errors.New("observability: GCP profile version requires GCP preset")
@@ -54,6 +57,15 @@ func ResolveGCPProfileVersion(preset Preset, version GCPProfileVersion) (GCPProf
 		return "", fmt.Errorf("observability: unsupported GCP profile version %q", version)
 	}
 	return version, nil
+}
+
+func validatePreset(preset Preset) error {
+	switch preset {
+	case PresetDefault, PresetGCP, PresetAWS, PresetAzure:
+		return nil
+	default:
+		return errors.New("observability: unknown logger preset")
+	}
 }
 
 // LoggerConfig configures NewLogger.

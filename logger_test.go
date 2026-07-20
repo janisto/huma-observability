@@ -336,6 +336,46 @@ func TestNewLoggerRejectsUnknownPreset(t *testing.T) {
 	}
 }
 
+func TestUnknownPresetIsRejectedAtEveryPublicConstructionBoundary(t *testing.T) {
+	t.Parallel()
+
+	const want = "observability: unknown logger preset"
+	if resolved, err := ResolveGCPProfileVersion(
+		Preset("bogus"),
+		"",
+	); resolved != "" || err == nil ||
+		err.Error() != want {
+		t.Fatalf("ResolveGCPProfileVersion(bogus) = (%q, %v), want empty and %q", resolved, err, want)
+	}
+
+	tests := []struct {
+		name      string
+		construct func()
+	}{
+		{name: "access logger", construct: func() { AccessLogger(AccessLoggerConfig{Preset: Preset("bogus")}) }},
+		{name: "request context", construct: func() { RequestContext(RequestContextConfig{Preset: Preset("bogus")}) }},
+		{
+			name: "HTTP request context",
+			construct: func() {
+				HTTPRequestContext(HTTPRequestContextConfig{Preset: Preset("bogus")})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				recovered := recover()
+				err, ok := recovered.(error)
+				if !ok || err.Error() != want {
+					t.Fatalf("%s panic = %#v, want %q", tt.name, recovered, want)
+				}
+			}()
+			tt.construct()
+		})
+	}
+}
+
 func TestGCPProfileVersionResolutionAndLoggerValidation(t *testing.T) {
 	t.Parallel()
 
