@@ -9,7 +9,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"go.uber.org/zap"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 func main() {

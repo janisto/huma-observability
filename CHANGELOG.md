@@ -7,6 +7,24 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+The changes in this section target `v2.0.0` under module path
+`github.com/janisto/huma-observability/v2`. They must not be tagged on the v1
+module path.
+
+### Migration from v1
+
+- Change imports and installation commands to
+  `github.com/janisto/huma-observability/v2`.
+- Enable `CapturePath`, `CapturePeerIP`, and `CaptureUserAgent` explicitly where
+  those privacy-sensitive fields are still required.
+- Rename consumers of `remote_ip` to `peer_ip`; the new field uses the direct
+  socket peer and ignores proxy-derived addresses.
+- Update status and error queries to use authoritative committed status,
+  standardized `panic` terminal reasons, and unconditional `ERROR` severity
+  for abnormal completion.
+- Treat custom request-ID validators as caller-input narrowing only; generated
+  IDs always retain the package baseline grammar.
+
 ### Added
 
 - Added GCP profile `0.1.0` selection with newest-supported default resolution,

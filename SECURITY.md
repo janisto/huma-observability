@@ -3,8 +3,8 @@
 ## Supported Versions
 
 Security fixes are provided for the latest tagged version of
-`github.com/janisto/huma-observability` available through the
-[Go module ecosystem](https://pkg.go.dev/github.com/janisto/huma-observability).
+`github.com/janisto/huma-observability/v2` available through the
+[Go module ecosystem](https://pkg.go.dev/github.com/janisto/huma-observability/v2).
 Older releases, pre-v1 releases, and unreleased commits are not supported.
 Upgrade to the latest release before reporting a vulnerability when possible.
 

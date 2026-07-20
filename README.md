@@ -1,10 +1,10 @@
 # huma-observability
 
 [![Latest release](https://img.shields.io/github/v/release/janisto/huma-observability)](https://github.com/janisto/huma-observability/releases/latest)
-[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability)
+[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability/v2)
 [![Go version](https://img.shields.io/github/go-mod/go-version/janisto/huma-observability)](https://github.com/janisto/huma-observability/blob/main/go.mod)
 [![CI](https://img.shields.io/github/actions/workflow/status/janisto/huma-observability/ci.yml?branch=main&label=CI)](https://github.com/janisto/huma-observability/actions/workflows/ci.yml)
-[![Socket Badge](https://badge.socket.dev/go/package/github.com/janisto/huma-observability)](https://socket.dev/go/package/github.com/janisto/huma-observability)
+[![Socket Badge](https://badge.socket.dev/go/package/github.com/janisto/huma-observability/v2)](https://socket.dev/go/package/github.com/janisto/huma-observability/v2)
 
 `huma-observability` provides request correlation, request-scoped Zap loggers,
 and structured Zap access logging middleware for
@@ -38,7 +38,7 @@ OpenTelemetry, or ship logs to a backend.
 
 ## Package scope
 
-The module path is `github.com/janisto/huma-observability`; the declared Go
+The module path is `github.com/janisto/huma-observability/v2`; the declared Go
 package name is `obs`.
 
 This is not official Huma framework middleware. It is a small, opinionated
@@ -68,22 +68,22 @@ It also does not export metrics, create AWS X-Ray segments, or emit generic
 - Huma v2.30.0 or newer within the Huma v2 line.
 - Zap.
 
-The v1 release line follows Semantic Versioning. Exported APIs, structured log
-fields, defaults, and supported runtime versions are compatibility contracts.
-Breaking changes require a new major version and will include migration
-guidance.
+The v1 API and log contract remains available at the unsuffixed module path.
+This checkout targets v2 because its privacy defaults and structured output are
+intentionally incompatible with v1. See the changelog migration section before
+upgrading.
 
 ## Install
 
 ```sh
-go get github.com/janisto/huma-observability
+go get github.com/janisto/huma-observability/v2
 ```
 
 Import the module path normally. The package name is `obs`, so application code
 uses the `obs` identifier:
 
 ```go
-import "github.com/janisto/huma-observability"
+import "github.com/janisto/huma-observability/v2"
 ```
 
 ## Quick Start
@@ -98,7 +98,7 @@ package main
 import (
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 func setup(api huma.API) error {

@@ -48,13 +48,13 @@ gh release edit "$VERSION" --draft=false --latest
 ## 4. Verify publication
 
 ```bash
-MODULE=github.com/janisto/huma-observability
+MODULE=github.com/janisto/huma-observability/v2
 GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
   go list -m "$MODULE@$VERSION"
 gh release view "$VERSION"
 ```
 
 Verify the exact version page at
-`https://pkg.go.dev/github.com/janisto/huma-observability@vX.Y.Z`. The Go proxy,
+`https://pkg.go.dev/github.com/janisto/huma-observability/v2@vX.Y.Z`. The Go proxy,
 checksum database, and pkg.go.dev may become available at different times. Wait
 for indexing; do not retag a valid release.
