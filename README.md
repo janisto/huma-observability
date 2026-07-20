@@ -232,7 +232,7 @@ The package also emits common trace fields when a valid trace exists:
 - `parent_id`
 - `trace_flags`
 - `trace_sampled`
-- `trace_id_random` only in explicit Level 2 mode
+- `trace_id_random` only for version `00` in explicit Level 2 mode
 
 Provider-specific propagation headers such as `X-Cloud-Trace-Context`,
 `X-Amzn-Trace-Id`, and Azure's legacy `Request-Id` header are intentionally not
@@ -337,7 +337,7 @@ Request metadata fields:
 | `parent_id` | The W3C parent ID from `traceparent`. |
 | `trace_flags` | The W3C trace flags value. |
 | `trace_sampled` | Boolean value derived from the sampled flag. |
-| `trace_id_random` | Level 2 boolean derived from bit one of the trace flags; absent in Level 1. |
+| `trace_id_random` | Level 2 boolean derived from bit one for version `00`; absent in Level 1 and unknown higher versions. |
 
 Provider-specific fields:
 
@@ -371,9 +371,10 @@ does not enable them. When path capture is enabled, GCP
 scheme, authority, query, or fragment. GCP `remoteIp` and `userAgent` appear
 only with their corresponding portable opt-ins.
 
-Captured paths and peers are validated rather than repaired: unavailable or
-non-origin-form paths are omitted, and peer fields contain only canonical
-unzoned IPv4 or IPv6 address literals. GCP severities always use `DEBUG`,
+Captured paths and peers are validated rather than repaired: unavailable and
+opaque targets are omitted; absolute-form targets are reduced to their escaped
+path without scheme, authority, query, or fragment. Peer fields contain only
+canonical unzoned IPv4 or IPv6 address literals. GCP severities always use `DEBUG`,
 `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. A custom status mapper returning a
 terminal or unknown Zap level falls back to the default status mapping.
 
@@ -385,7 +386,9 @@ Logger keys:
 `AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
 access logs. Fields using package-owned or provider-reserved keys are ignored to
 avoid duplicate core keys in the JSON output. If the returned Zap field slice
-repeats a custom key, the first value wins.
+repeats a custom key, the first value wins. Inline object marshalers are ignored
+because their inner keys cannot be checked safely before they enter the access
+record namespace.
 
 That collision guarantee applies to package-controlled context and access
 merges. Arbitrary fields passed directly to a raw Zap logger are application

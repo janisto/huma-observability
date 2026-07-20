@@ -44,6 +44,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   terminal or unknown status-callback levels, omit unavailable request paths,
   and emit only canonical unzoned IP address literals for direct peers.
 
+### Fixed
+
+- Preserve sampling while omitting the Level 2 random flag for unknown future
+  `traceparent` versions.
+- Reject `zap.Inline` values from access-log `ExtraFields` so nested marshalers
+  cannot bypass reserved-key collision protection.
+- Align path-privacy documentation with the tested absolute-form behavior:
+  scheme, authority, query, and fragment are removed while the escaped path is
+  retained.
+
 ## [1.0.1] - 2026-07-17
 
 ### Added

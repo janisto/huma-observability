@@ -20,6 +20,14 @@ import (
 
 type panickingAccessWriter struct{}
 
+type reservedInlineFields struct{}
+
+func (reservedInlineFields) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
+	encoder.AddString("status", "bad-override")
+	encoder.AddString("request_id", "bad-request")
+	return nil
+}
+
 func (panickingAccessWriter) Write([]byte) (int, error) {
 	panic("writer failed")
 }
@@ -872,6 +880,68 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 	if got := strings.Count(line, `"tenant_id"`); got != 1 {
 		t.Fatalf("tenant_id key count = %d, want 1; line=%s", got, line)
 	}
+}
+
+func TestAccessLoggerRejectsInlineExtraFields(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+		defaultRequestIDHeader: "req-inline",
+	})
+
+	RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+		AccessLogger(AccessLoggerConfig{
+			Logger: logger,
+			ExtraFields: func(huma.Context) []zap.Field {
+				return []zap.Field{zap.Inline(reservedInlineFields{}), zap.String("tenant_id", "tenant-1")}
+			},
+		})(ctx, func(ctx huma.Context) {
+			ctx.SetStatus(http.StatusOK)
+		})
+	})
+
+	line := strings.TrimSpace(buffer.String())
+	if strings.Contains(line, "bad-override") || strings.Contains(line, "bad-request") {
+		t.Fatalf("inline extra fields leaked into access log: %s", line)
+	}
+	if got := strings.Count(line, `"status"`); got != 1 {
+		t.Fatalf("status key count = %d, want 1; line=%s", got, line)
+	}
+	entry := decodeSingleLogLine(t, line)
+	assertAccessField(t, entry, "request_id", "req-inline")
+	assertAccessField(t, entry, "status", float64(http.StatusOK))
+	assertAccessField(t, entry, "tenant_id", "tenant-1")
+}
+
+func TestAccessLoggerOmitsRandomFlagForFutureTraceparentVersion(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/test", map[string]string{
+		defaultRequestIDHeader:   "req-future",
+		defaultTraceparentHeader: "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-03-opaque",
+	})
+
+	RequestContext(RequestContextConfig{TraceContextLevel: TraceContextLevel2})(ctx, func(ctx huma.Context) {
+		AccessLogger(AccessLoggerConfig{Logger: logger, TraceContextLevel: TraceContextLevel2})(
+			ctx,
+			func(huma.Context) {},
+		)
+	})
+
+	entry := decodeSingleLogLine(t, buffer.String())
+	assertAccessField(t, entry, "trace_flags", "03")
+	assertAccessField(t, entry, "trace_sampled", true)
+	assertNoAccessField(t, entry, "trace_id_random")
 }
 
 func TestAccessLoggerDoesNotMutateExistingMetadata(t *testing.T) {

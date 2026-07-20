@@ -197,8 +197,22 @@ func TestTraceContextLevelResolutionAndRandomFlag(t *testing.T) {
 	for _, tt := range flags {
 		trace, ok := ParseTraceparentWithLevel(prefix+tt.value, TraceContextLevel2)
 		if !ok || trace.Level != TraceContextLevel2 ||
-			trace.Flags != tt.value || trace.Sampled != tt.sampled || trace.Random != tt.random {
+			trace.Version != "00" || trace.Flags != tt.value || trace.Sampled != tt.sampled || trace.Random != tt.random {
 			t.Fatalf("Level 2 flags %q parsed as %#v", tt.value, trace)
+		}
+	}
+	for _, tt := range []struct {
+		flags   string
+		sampled bool
+	}{
+		{flags: "02"},
+		{flags: "03", sampled: true},
+	} {
+		value := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-" + tt.flags + "-opaque"
+		trace, ok := ParseTraceparentWithLevel(value, TraceContextLevel2)
+		if !ok || trace.Version != "01" || trace.Level != TraceContextLevel2 ||
+			trace.Sampled != tt.sampled || trace.Random {
+			t.Fatalf("future Level 2 flags %q parsed as %#v", tt.flags, trace)
 		}
 	}
 	level1, ok := ParseTraceparentWithLevel(prefix+"03", TraceContextLevel1)

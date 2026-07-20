@@ -213,7 +213,7 @@ func requestMetadataFields(metadata *requestMetadata) []zap.Field {
 			zap.String("trace_flags", metadata.Trace.Flags),
 			zap.Bool("trace_sampled", metadata.Trace.Sampled),
 		)
-		if metadata.Trace.Level == TraceContextLevel2 {
+		if metadata.Trace.Level == TraceContextLevel2 && metadata.Trace.Version == "00" {
 			fields = append(fields, zap.Bool("trace_id_random", metadata.Trace.Random))
 		}
 	}
@@ -341,6 +341,9 @@ func appendExtraFields(fields, extra []zap.Field) []zap.Field {
 		seen[field.Key] = struct{}{}
 	}
 	for _, field := range extra {
+		if field.Type == zapcore.InlineMarshalerType {
+			continue
+		}
 		if isReservedLogField(field.Key) {
 			continue
 		}

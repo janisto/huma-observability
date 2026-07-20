@@ -39,6 +39,7 @@ func ResolveTraceContextLevel(level TraceContextLevel) (TraceContextLevel, error
 
 // TraceContext contains parsed W3C trace context for a request.
 type TraceContext struct {
+	Version     string
 	TraceID     string
 	ParentID    string
 	Flags       string
@@ -100,11 +101,12 @@ func ParseTraceparentWithLevel(value string, level TraceContextLevel) (TraceCont
 	}
 
 	trace := TraceContext{
+		Version:     version,
 		TraceID:     traceID,
 		ParentID:    parentID,
 		Flags:       flags,
 		Sampled:     flagValue&0x01 == 0x01,
-		Random:      resolved == TraceContextLevel2 && flagValue&0x02 == 0x02,
+		Random:      resolved == TraceContextLevel2 && version == "00" && flagValue&0x02 == 0x02,
 		Level:       resolved,
 		Traceparent: value,
 		Valid:       true,
