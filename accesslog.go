@@ -258,7 +258,7 @@ func accessLogFields(
 	}
 	peerIP := ""
 	if config.CapturePeerIP {
-		peerIP = remoteIP(ctx.RemoteAddr())
+		peerIP = directPeerIP(ctx.RemoteAddr())
 	}
 	if peerIP != "" {
 		fields = append(fields, zap.String("peer_ip", peerIP))
@@ -276,7 +276,7 @@ func accessLogFields(
 			URL:       path,
 			Status:    status,
 			UserAgent: userAgent,
-			RemoteIP:  peerIP,
+			PeerIP:    peerIP,
 			Latency:   duration,
 		}))
 	}
@@ -408,7 +408,7 @@ func requestPath(ctx huma.Context) string {
 	return path
 }
 
-func remoteIP(remoteAddr string) string {
+func directPeerIP(remoteAddr string) string {
 	if remoteAddr == "" {
 		return ""
 	}
@@ -470,7 +470,7 @@ type gcpHTTPRequest struct {
 	URL       string
 	Status    int
 	UserAgent string
-	RemoteIP  string
+	PeerIP    string
 	Latency   time.Duration
 }
 
@@ -487,8 +487,8 @@ func (r gcpHTTPRequest) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
 	if r.UserAgent != "" {
 		encoder.AddString("userAgent", r.UserAgent)
 	}
-	if r.RemoteIP != "" {
-		encoder.AddString("remoteIp", r.RemoteIP)
+	if r.PeerIP != "" {
+		encoder.AddString("remoteIp", r.PeerIP)
 	}
 	encoder.AddString("latency", formatProtoDuration(r.Latency))
 	return nil

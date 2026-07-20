@@ -24,6 +24,8 @@ module path.
   for abnormal completion.
 - Treat custom request-ID validators as caller-input narrowing only; generated
   IDs always retain the package baseline grammar.
+- Remove v1 compatibility aliases and shims; migrate imports and configuration
+  directly to the documented v2 surface.
 
 ### Added
 
@@ -36,6 +38,10 @@ module path.
   `trace_id_random` projection.
 
 ### Changed
+
+- Renamed remaining internal direct-peer helpers and fields so v2 source no
+  longer models the removed portable `remote_ip` name. The required GCP
+  `httpRequest.remoteIp` output member is unchanged.
 
 - **Breaking:** Changed access logging to omit raw path, direct peer IP, and
   user agent by default. Applications that need the previous fields must enable

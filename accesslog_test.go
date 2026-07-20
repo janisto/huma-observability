@@ -1664,7 +1664,7 @@ func assertNoAccessField(t *testing.T, entry map[string]any, key string) {
 	}
 }
 
-func TestRemoteIPCanonicalizesValidatedAddresses(t *testing.T) {
+func TestDirectPeerIPCanonicalizesValidatedAddresses(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1686,8 +1686,8 @@ func TestRemoteIPCanonicalizesValidatedAddresses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
 			t.Parallel()
-			if got := remoteIP(tt.in); got != tt.want {
-				t.Fatalf("remoteIP(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := directPeerIP(tt.in); got != tt.want {
+				t.Fatalf("directPeerIP(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

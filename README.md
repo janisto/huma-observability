@@ -72,6 +72,8 @@ The v1 API and log contract remains available at the unsuffixed module path.
 This checkout targets v2 because its privacy defaults and structured output are
 intentionally incompatible with v1. See the changelog migration section before
 upgrading.
+Version 2 provides no v1 field aliases, option shims, or unsuffixed import
+fallback; applications must migrate to the documented v2 API and module path.
 
 ## Install
 
