@@ -76,6 +76,37 @@ func TestNewLoggerWritesPresetJSON(t *testing.T) {
 	}
 }
 
+func TestNewLoggerWritesLFTerminatedNDJSONRecords(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.Info("first\nlogical message")
+	logger.Error("second message")
+
+	output := buffer.String()
+	if !strings.HasSuffix(output, "\n") || strings.Contains(output, "\r") {
+		t.Fatalf("output is not LF-terminated NDJSON: %q", output)
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("physical line count = %d, want 2; output=%q", len(lines), output)
+	}
+	wantMessages := []string{"first\nlogical message", "second message"}
+	for index, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line %d is not one JSON object: %v; line=%q", index, err, line)
+		}
+		if got := record["message"]; got != wantMessages[index] {
+			t.Fatalf("line %d message = %#v, want %q", index, got, wantMessages[index])
+		}
+	}
+}
+
 func TestNewLoggerGCPLevelMapping(t *testing.T) {
 	t.Parallel()
 

@@ -67,7 +67,8 @@ type LoggerConfig struct {
 	Development       bool
 }
 
-// NewLogger creates a JSON Zap logger for the selected preset.
+// NewLogger creates a Zap logger that writes one compact JSON object plus LF
+// per event for the selected preset.
 func NewLogger(config LoggerConfig) (*zap.Logger, error) {
 	if _, err := ResolveGCPProfileVersion(config.Preset, config.GCPProfileVersion); err != nil {
 		return nil, err
