@@ -22,15 +22,16 @@ module path.
 - Update status and error queries to use authoritative committed status,
   standardized `panic` terminal reasons, and unconditional `ERROR` severity
   for abnormal completion.
-- Treat custom request-ID validators as caller-input narrowing only; generated
-  IDs always retain the package baseline grammar.
+- Custom request-ID validators apply only to caller input and may broaden it
+  within Go's native HTTP field-value boundary; generated IDs retain the
+  package baseline grammar.
 - Remove v1 compatibility aliases and shims; migrate imports and configuration
   directly to the documented v2 surface.
 
 ### Added
 
-- Added GCP profile `0.1.0` selection with newest-supported default resolution,
-  exact pinning, and effective-version introspection.
+- Added exact current `0.1.0` profiles for GCP, AWS, and Azure with default
+  resolution, exact pinning, and effective-version introspection.
 - Added independent `CapturePath`, `CapturePeerIP`, and `CaptureUserAgent`
   access-log opt-ins.
 - Added immutable W3C Trace Context Level 1/Level 2 selection, effective-level
@@ -53,9 +54,9 @@ module path.
   query-free path.
 - Aligned the GCP health fixture to operation `health_check` and deterministic
   12.5 ms access timing.
-- **Breaking:** Reject duplicate raw request-ID and `traceparent` field-lines,
-  and prevent custom request-ID validators from admitting values outside the
-  package's safe baseline grammar.
+- **Breaking:** Reject duplicate raw request-ID and `traceparent` field-lines;
+  custom request-ID validators can broaden caller input within Go's native HTTP
+  field-value boundary while generated IDs remain strict.
 - **Breaking:** Stop inferring operation-default, 200, and panic 500 statuses
   when Huma has not established a status. Escaping panics now use
   `terminal_reason: "panic"`, force `ERROR`, and retain the original panic
@@ -73,10 +74,12 @@ module path.
 ### Fixed
 
 - Preserve framework-valid route parameter names, including extended and
-  longer names, reject non-ASCII or control-bearing `traceparent` fields, and
-  reject trace-level disagreement regardless of middleware order. Reject
-  unknown presets consistently and prevent access enrichment from replacing
-  Zap-owned caller and Level 2 trace fields.
+  longer names, HTTP-safe opaque future `traceparent` suffixes without an
+  invented length cap, valid `tracestate` beyond 512 characters, HTAB
+  User-Agent values, custom-admitted request IDs, and nonempty static operation
+  IDs. Reject trace-level disagreement regardless of middleware order, reject
+  unknown presets consistently, reserve Zap `stacktrace`, and protect Zap-owned
+  caller and Level 2 trace fields.
 
 - Preserve sampling while omitting the Level 2 random flag for unknown future
   `traceparent` versions.

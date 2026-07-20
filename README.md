@@ -241,10 +241,14 @@ api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 
 `ResolveTraceContextLevel(0)` exposes the effective default. Unsupported
 levels fail during middleware construction. Exactly one raw `traceparent`
-field-line is eligible. Multiple `tracestate` fields are combined in wire
+field-line is eligible. Version `00` uses exact framing; future-version suffix
+data remains opaque native HTTP field content without a package-invented length
+ceiling. Multiple `tracestate` fields are combined in wire
 order and validated with the selected level's complete key/value grammar,
-unique keys, at most 32 members, and a 512-byte raw ceiling. Invalid
-`tracestate` is discarded without discarding a valid `traceparent`.
+unique keys, and at most 32 members. The package can propagate at least 512
+characters and admits a valid 513-character value; 512 is not a package
+rejection ceiling. Invalid `tracestate` is discarded without discarding a
+valid `traceparent`.
 
 This means every log line gets a stable grouping key:
 
@@ -335,6 +339,11 @@ The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
 The middleware does not create AWS X-Ray segments and does not emit `span_id`
 from an incoming W3C parent ID.
 
+The installed package supports exact current AWS profile `0.1.0`. Omission
+resolves to it at construction; pin with `obs.AWSProfileVersionV0_1_0` and
+inspect the effective value with `ResolveAWSProfileVersion`. Other versions and
+cross-preset pins fail without a network lookup.
+
 ### Azure
 
 The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
@@ -346,6 +355,11 @@ The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
 - `trace_sampled`
 - `operation_Id`, mapped from the W3C trace ID.
 - `operation_ParentId`, mapped from the W3C parent ID.
+
+The installed package supports exact current Azure profile `0.1.0`. Omission
+resolves to it at construction; pin with `obs.AzureProfileVersionV0_1_0` and
+inspect the effective value with `ResolveAzureProfileVersion`. Other versions
+and cross-preset pins fail without a network lookup.
 
 ## Field Contract
 
@@ -431,11 +445,13 @@ Default `RequestContext` and `HTTPRequestContext` behavior:
 - Generated request IDs: 16 random bytes encoded as lowercase hex.
 
 Incoming request IDs use 1–128 ASCII letters, digits, `-`, `.`, `_`, and
-`~`. A custom validator may further restrict that baseline but cannot admit
-an unsafe caller value. It is applied only to caller input, never to generated
-or package-fallback IDs. A configured generator is tried exactly twice unless
-its first result passes the baseline. Validator and generator panics are
-contained as rejection/failure and do not bypass the handler. Multiple raw request-ID or `traceparent` field-lines are
+`~` by default. A custom validator may admit a broader nonempty value within
+Go's native HTTP field-value boundary, including punctuation, obs-text bytes,
+and values longer than 128 bytes. It is applied only to caller input, never to
+generated or package-fallback IDs. A configured generator is tried exactly
+twice unless its first result passes the baseline. Validator and generator
+panics are contained as rejection/failure and do not bypass the handler.
+Multiple raw request-ID or `traceparent` field-lines are
 ambiguous and rejected. Invalid input is replaced or ignored while request
 processing continues.
 
@@ -459,6 +475,8 @@ Useful options:
 - `Preset`: selects generic, GCP, AWS, or Azure field naming.
 - `GCPProfileVersion`: optionally pins a supported GCP profile; omission selects
   the newest installed version when `PresetGCP` is selected.
+- `AWSProfileVersion` and `AzureProfileVersion`: optionally pin the exact
+  current `0.1.0` profile for their matching preset; omission resolves to it.
 - `Level`: sets the Zap level enabler. Defaults to info.
 - `Writer`: overrides the application log destination.
 - `ErrorWriter`: overrides Zap's internal error destination.
@@ -466,9 +484,9 @@ Useful options:
 - `Development`: enables Zap development behavior.
 
 `AccessLoggerConfig` separately provides `GCPProfileVersion`,
-`TraceContextLevel`, `CapturePath`, `CapturePeerIP`, `CaptureUserAgent`,
-the injectable monotonic `Now` clock, status-level mapping, and
-collision-filtered extra fields.
+`AWSProfileVersion`, `AzureProfileVersion`, `TraceContextLevel`, `CapturePath`,
+`CapturePeerIP`, `CaptureUserAgent`, the injectable monotonic `Now` clock,
+status-level mapping, and collision-filtered extra fields.
 
 Operation defaults are route metadata, not evidence that a response status was
 established. Access records therefore omit `status` when `ctx.Status()` is
@@ -526,31 +544,6 @@ just vuln
 [zizmor](https://docs.zizmor.sh/). `just vuln` runs the Go vulnerability scanner
 separately.
 
-## References
-
-- W3C Trace Context Level 1 Recommendation:
-  https://www.w3.org/TR/trace-context/
-- W3C Trace Context Level 2 Candidate Recommendation pinned by this package:
-  https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/
-- Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
-  trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
-- Google Cloud changed raw `TRACE_ID` to the preferred `LogEntry.trace` format
-  in January 2026: https://docs.cloud.google.com/trace/docs/release-notes
-- Google Cloud structured logging documents special JSON fields such as
-  `severity`, `httpRequest`, `logging.googleapis.com/trace`, and
-  `logging.googleapis.com/trace_sampled`:
-  https://docs.cloud.google.com/logging/docs/structured-logging
-- AWS X-Ray documents W3C trace IDs formatted as X-Ray trace IDs:
-  https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html
-- Azure Application Insights documents telemetry correlation fields including
-  `operation_Id` and `operation_ParentId`:
-  https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete
-- Azure Application Insights documents W3C Trace Context mapping to
-  `Operation_Id` and `Operation_ParentId`:
-  https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
-- OpenTelemetry `otelhttp` provides Go HTTP server and client instrumentation:
-  https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
-
 ## Mutation Testing
 
 Install [Gremlins](https://github.com/go-gremlins/gremlins) with Homebrew on
@@ -602,3 +595,35 @@ fix when it represents behavior the parser must preserve.
 
 See the [Go fuzzing documentation](https://go.dev/doc/security/fuzz/) for the
 engine's workflow and additional flags.
+
+## References
+
+- [Huma middleware](https://huma.rocks/features/middleware/) documents the
+  router-agnostic middleware chain and request-context values.
+- [Huma v2 API reference](https://pkg.go.dev/github.com/danielgtaylor/huma/v2)
+  defines `API`, `Context`, `Operation`, middleware order, and response access.
+- [`net/http`](https://pkg.go.dev/net/http) defines Go request contexts,
+  handlers, response writers, and server behavior.
+- [Zap](https://pkg.go.dev/go.uber.org/zap) and
+  [`zapcore`](https://pkg.go.dev/go.uber.org/zap/zapcore) define structured
+  fields, level checks, cores, writer synchronization, and concurrency safety.
+- [W3C Trace Context Level 1 Recommendation](https://www.w3.org/TR/2021/REC-trace-context-1-20211123/)
+  defines the default `traceparent` and `tracestate` contract.
+- [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
+  defines the explicit Level 2 key grammar and random trace-ID flag.
+- [Google Cloud trace and log integration](https://cloud.google.com/trace/docs/trace-log-integration)
+  documents the bare trace ID as the preferred trace field format.
+- [Google Cloud Trace release notes](https://cloud.google.com/trace/docs/release-notes)
+  record when the bare trace ID became the preferred form while the full
+  project resource name remained supported.
+- [Google Cloud structured logging](https://cloud.google.com/logging/docs/structured-logging)
+  documents `severity`, `message`, `httpRequest`, and special trace fields.
+- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html#xray-api-traceids)
+  document converting a W3C trace ID to `1-8hex-24hex` form.
+- [Azure Application Insights data model](https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete)
+  defines `operation_Id` as the root-operation identifier and
+  `operation_ParentId` as the immediate-parent identifier.
+
+## License
+
+[MIT](LICENSE)

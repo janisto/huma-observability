@@ -134,6 +134,16 @@ func TestRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
 			want:     "tenant-client",
 		},
 		{
+			name:     "custom validator admits colon",
+			incoming: "tenant:client",
+			want:     "tenant:client",
+		},
+		{
+			name:     "custom validator admits 129 bytes",
+			incoming: strings.Repeat("x", 129),
+			want:     strings.Repeat("x", 129),
+		},
+		{
 			name:          "custom-invalid incoming id is replaced",
 			incoming:      "client-123",
 			want:          "tenant-generated",
@@ -155,7 +165,8 @@ func TestRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
 					return "tenant-generated"
 				},
 				ValidateRequestID: func(value string) bool {
-					return strings.HasPrefix(value, "tenant-")
+					return strings.HasPrefix(value, "tenant-") ||
+						value == "tenant:client" || len(value) == 129
 				},
 			})(ctx, func(next huma.Context) {
 				if got := RequestID(next.Context()); got != tt.want {
@@ -174,6 +185,21 @@ func TestRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
 				t.Fatalf("response request ID header = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNativeRequestIDBoundaryAllowsOnlyHTTPFieldText(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"\t", " ", "~", "\x80", "\xff"} {
+		if !nativeSafeRequestID(value) {
+			t.Fatalf("native-safe request ID boundary %q was rejected", value)
+		}
+	}
+	for _, value := range []string{"", "\x00", "\x1f", "\x7f"} {
+		if nativeSafeRequestID(value) {
+			t.Fatalf("unsafe request ID boundary %q was accepted", value)
+		}
 	}
 }
 
@@ -810,6 +836,7 @@ func TestRequestContextTracestateLengthBoundary(t *testing.T) {
 
 	traceparent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	valid512 := "a=" + strings.Repeat("v", 256) + ",b=" + strings.Repeat("w", 251)
+	valid513 := strings.Repeat("a", 256) + "=" + strings.Repeat("v", 256)
 	tests := []struct {
 		name       string
 		tracestate string
@@ -820,11 +847,7 @@ func TestRequestContextTracestateLengthBoundary(t *testing.T) {
 			tracestate: valid512,
 			want:       valid512,
 		},
-		{
-			name:       "over max length tracestate dropped",
-			tracestate: valid512 + "w",
-			want:       "",
-		},
+		{name: "513 character tracestate kept", tracestate: valid513, want: valid513},
 	}
 
 	for _, tt := range tests {
@@ -1240,7 +1263,7 @@ func TestHTTPRequestContextRejectsInvalidTraceAndOverlongTracestate(t *testing.T
 			name:            "valid trace drops tracestate above maximum length",
 			requestID:       "req-overlong-tracestate",
 			traceparent:     traceparent,
-			tracestate:      strings.Repeat("b", maxTracestateLen+1),
+			tracestate:      strings.Repeat("b", 513),
 			wantCorrelation: traceID,
 			wantValid:       true,
 		},

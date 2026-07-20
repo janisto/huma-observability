@@ -11,7 +11,7 @@ func TestParseTraceparentValid(t *testing.T) {
 	t.Parallel()
 
 	futureVersion := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-	maxLengthFutureVersion := futureVersion + "-" + strings.Repeat("a", maxTraceparentLen-len(futureVersion)-1)
+	longFutureVersion := futureVersion + "-" + strings.Repeat("a", 457)
 
 	tests := []struct {
 		name    string
@@ -54,8 +54,13 @@ func TestParseTraceparentValid(t *testing.T) {
 			sampled: true,
 		},
 		{
-			name:    "future version at maximum accepted length",
-			value:   maxLengthFutureVersion,
+			name:    "future version beyond former 512 byte boundary",
+			value:   longFutureVersion,
+			sampled: true,
+		},
+		{
+			name:    "future version opaque obs text",
+			value:   futureVersion + "-opaque-ümlaut",
 			sampled: true,
 		},
 	}
@@ -98,8 +103,6 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 
 	valid := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	futureVersion := "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-	overlongFutureVersion := futureVersion + "-" + strings.Repeat("a", maxTraceparentLen-len(futureVersion))
-	multibyteOverLimit := futureVersion + "-" + strings.Repeat("é", 228) + "x"
 	tests := []struct {
 		name  string
 		value string
@@ -111,9 +114,6 @@ func TestParseTraceparentRejectsInvalidValues(t *testing.T) {
 		{name: "invalid version", value: "0g-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 		{name: "forbidden version ff", value: "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 		{name: "too short", value: valid[:len(valid)-1]},
-		{name: "future version over maximum length", value: overlongFutureVersion},
-		{name: "future version over UTF-8 byte limit", value: multibyteOverLimit},
-		{name: "future version non-ASCII", value: futureVersion + "-opaque-ümlaut"},
 		{name: "future version control", value: futureVersion + "-opaque\x1f"},
 		{name: "future version delete", value: futureVersion + "-opaque\x7f"},
 		{name: "all-zero trace id", value: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"},
@@ -263,7 +263,7 @@ func TestParseTracestateLevel1Matrix(t *testing.T) {
 		{name: "space before equals", rawValues: []string{"vendor =value"}},
 		{name: "empty key", rawValues: []string{"=value"}},
 		{name: "tab inside value", rawValues: []string{"vendor=\tvalue"}},
-		{name: "raw over limit", rawValues: []string{strings.Repeat(" ", 513)}},
+		{name: "long optional whitespace", rawValues: []string{strings.Repeat(" ", 513)}, valid: true},
 		{name: "duplicate key", rawValues: []string{"vendor=value1,vendor=value2"}},
 		{
 			name:      "empty member",
@@ -334,7 +334,7 @@ func TestParseTracestateLevel1Matrix(t *testing.T) {
 		},
 		{name: "33 members", rawValues: []string{tracestateMembers(33)}},
 		{name: "512 bytes", rawValues: []string{valid512}, want: valid512, valid: true},
-		{name: "513 bytes", rawValues: []string{valid512 + "w"}},
+		{name: "513 bytes", rawValues: []string{valid512 + "w"}, want: valid512 + "w", valid: true},
 		{name: "empty value", rawValues: []string{"vendor="}},
 	}
 	for _, tt := range tests {

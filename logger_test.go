@@ -427,6 +427,31 @@ func TestGCPProfileVersionResolutionAndLoggerValidation(t *testing.T) {
 	}
 }
 
+func TestAWSAndAzureProfileVersionResolution(t *testing.T) {
+	t.Parallel()
+	aws, err := ResolveAWSProfileVersion(PresetAWS, "")
+	if err != nil || aws != AWSProfileVersionV0_1_0 {
+		t.Fatalf("AWS latest = %q, %v", aws, err)
+	}
+	azure, err := ResolveAzureProfileVersion(PresetAzure, AzureProfileVersionV0_1_0)
+	if err != nil || azure != AzureProfileVersionV0_1_0 {
+		t.Fatalf("Azure pin = %q, %v", azure, err)
+	}
+	if _, resolveErr := ResolveAWSProfileVersion(PresetAWS, "0.2.0"); resolveErr == nil {
+		t.Fatal("unsupported AWS version accepted")
+	}
+	if _, resolveErr := ResolveAzureProfileVersion(PresetGCP, AzureProfileVersionV0_1_0); resolveErr == nil {
+		t.Fatal("cross-preset Azure version accepted")
+	}
+	logger, err := NewLogger(LoggerConfig{
+		Preset:            PresetAWS,
+		AWSProfileVersion: AWSProfileVersionV0_1_0,
+	})
+	if err != nil || logger == nil {
+		t.Fatalf("AWS logger pin = %#v, %v", logger, err)
+	}
+}
+
 func TestNewLoggerLocksWriterForConcurrentUse(t *testing.T) {
 	t.Parallel()
 

@@ -218,7 +218,7 @@ func TestCanonicalRouteTemplateCurrentHumaForms(t *testing.T) {
 		})
 	}
 	for _, name := range []string{
-		"A", "_", "0item", "item-id", "item.name", strings.Repeat("a", 65),
+		"A", "_", "0item", "item-id", "item.name", "item name", strings.Repeat("a", 65),
 	} {
 		t.Run("valid-name-"+name, func(t *testing.T) {
 			t.Parallel()
@@ -311,15 +311,27 @@ func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 	) (*testOutput, error) {
 		return &testOutput{Body: testBody{OK: true}}, nil
 	})
+	huma.Register(api, huma.Operation{
+		OperationID: "get\ncontrol",
+		Method:      http.MethodGet,
+		Path:        "/control/{item}",
+	}, func(context.Context, *struct {
+		Item string `path:"item"`
+	},
+	) (*testOutput, error) {
+		return &testOutput{Body: testBody{OK: true}}, nil
+	})
 
-	for _, target := range []string{"/items/tenant-a", "/items/tenant-b", "/extended/value", "/long/value"} {
+	for _, target := range []string{
+		"/items/tenant-a", "/items/tenant-b", "/extended/value", "/long/value", "/control/value",
+	} {
 		if response := api.Get(target); response.Code != http.StatusOK {
 			t.Fatalf("GET %s status = %d, want 200", target, response.Code)
 		}
 	}
 	entries := decodeLogLines(t, buffer.String())
-	if len(entries) != 4 {
-		t.Fatalf("log line count = %d, want 4", len(entries))
+	if len(entries) != 5 {
+		t.Fatalf("log line count = %d, want 5", len(entries))
 	}
 	for _, entry := range entries[:2] {
 		assertAccessField(t, entry, "path_template", "/items/{item_id}")
@@ -332,30 +344,24 @@ func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 		"/long/{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}",
 	)
 	assertAccessField(t, entries[3], "operation_id", "get_long")
+	assertAccessField(t, entries[4], "path_template", "/control/{item}")
+	assertAccessField(t, entries[4], "operation_id", "get\ncontrol")
 }
 
-func TestAccessMetadataStringsRejectEmptyDuplicateAndControlValues(t *testing.T) {
+func TestAccessMetadataPreservesStaticOperationIDsAndValidUserAgentWhitespace(t *testing.T) {
 	t.Parallel()
 
-	if _, ok := singleValidHeaderValue([]string{"agent/1"}); !ok {
-		t.Fatal("one valid User-Agent was rejected")
+	if value, ok := singleValidUserAgent([]string{"agent/1\tcomponent/2"}); !ok || value != "agent/1\tcomponent/2" {
+		t.Fatalf("valid tab-separated User-Agent = %q, %v", value, ok)
 	}
-	for _, values := range [][]string{nil, {""}, {"agent/1", "agent/1"}, {"agent/1\nforged"}} {
-		if value, ok := singleValidHeaderValue(values); ok || value != "" {
-			t.Fatalf("singleValidHeaderValue(%q) = %q, %v; want empty, false", values, value, ok)
+	for _, value := range []string{" ", "~", "\x80", "\xff"} {
+		if got, ok := singleValidUserAgent([]string{value}); !ok || got != value {
+			t.Fatalf("valid User-Agent boundary %q = %q, %v", value, got, ok)
 		}
 	}
-	if validMetadataString("get_item\nforged") {
-		t.Fatal("operation ID containing a control character was accepted")
-	}
-	for _, value := range []string{"\x1f", "\x7f"} {
-		if validMetadataString(value) {
-			t.Fatalf("metadata control boundary %q was accepted", value)
-		}
-	}
-	for _, value := range []string{" ", "~"} {
-		if !validMetadataString(value) {
-			t.Fatalf("printable metadata boundary %q was rejected", value)
+	for _, value := range []string{"\x00", "\x1f", "\x7f"} {
+		if got, ok := singleValidUserAgent([]string{value}); ok || got != "" {
+			t.Fatalf("unsafe User-Agent boundary %q = %q, %v", value, got, ok)
 		}
 	}
 }
@@ -867,6 +873,7 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 		"severity",
 		"logger",
 		"caller",
+		"stacktrace",
 		"message",
 		"request_id",
 		"correlation_id",
@@ -2081,5 +2088,29 @@ func TestAccessLoggerResolvesAndValidatesGCPProfileVersionAtConstruction(t *test
 			}()
 			AccessLogger(tt.config)
 		})
+	}
+}
+
+func TestAccessLoggerResolvesAWSAndAzureProfileVersionsAtConstruction(t *testing.T) {
+	t.Parallel()
+	awsLatest := normalizeAccessLoggerConfig(AccessLoggerConfig{Preset: PresetAWS})
+	awsPinned := normalizeAccessLoggerConfig(AccessLoggerConfig{
+		Preset: PresetAWS, AWSProfileVersion: AWSProfileVersionV0_1_0,
+	})
+	if awsLatest.AWSProfileVersion != AWSProfileVersionV0_1_0 ||
+		awsPinned.AWSProfileVersion != AWSProfileVersionV0_1_0 {
+		t.Fatalf("AWS profiles = %q/%q, want 0.1.0", awsLatest.AWSProfileVersion, awsPinned.AWSProfileVersion)
+	}
+	azureLatest := normalizeAccessLoggerConfig(AccessLoggerConfig{Preset: PresetAzure})
+	azurePinned := normalizeAccessLoggerConfig(AccessLoggerConfig{
+		Preset: PresetAzure, AzureProfileVersion: AzureProfileVersionV0_1_0,
+	})
+	if azureLatest.AzureProfileVersion != AzureProfileVersionV0_1_0 ||
+		azurePinned.AzureProfileVersion != AzureProfileVersionV0_1_0 {
+		t.Fatalf(
+			"Azure profiles = %q/%q, want 0.1.0",
+			azureLatest.AzureProfileVersion,
+			azurePinned.AzureProfileVersion,
+		)
 	}
 }

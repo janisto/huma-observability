@@ -19,16 +19,18 @@ type StatusLeveler func(status int) zapcore.Level
 
 // AccessLoggerConfig configures AccessLogger middleware.
 type AccessLoggerConfig struct {
-	Logger            *zap.Logger
-	Preset            Preset
-	GCPProfileVersion GCPProfileVersion
-	TraceContextLevel TraceContextLevel
-	CapturePath       bool
-	CapturePeerIP     bool
-	CaptureUserAgent  bool
-	Now               func() time.Time
-	StatusLevel       StatusLeveler
-	ExtraFields       func(huma.Context) []zap.Field
+	Logger              *zap.Logger
+	Preset              Preset
+	GCPProfileVersion   GCPProfileVersion
+	AWSProfileVersion   AWSProfileVersion
+	AzureProfileVersion AzureProfileVersion
+	TraceContextLevel   TraceContextLevel
+	CapturePath         bool
+	CapturePeerIP       bool
+	CaptureUserAgent    bool
+	Now                 func() time.Time
+	StatusLevel         StatusLeveler
+	ExtraFields         func(huma.Context) []zap.Field
 }
 
 // AccessLogger returns Huma middleware that installs a request-scoped Zap
@@ -87,6 +89,16 @@ func normalizeAccessLoggerConfig(config AccessLoggerConfig) AccessLoggerConfig {
 		panic(err)
 	}
 	config.GCPProfileVersion = version
+	awsVersion, err := ResolveAWSProfileVersion(config.Preset, config.AWSProfileVersion)
+	if err != nil {
+		panic(err)
+	}
+	config.AWSProfileVersion = awsVersion
+	azureVersion, err := ResolveAzureProfileVersion(config.Preset, config.AzureProfileVersion)
+	if err != nil {
+		panic(err)
+	}
+	config.AzureProfileVersion = azureVersion
 	if config.Logger == nil {
 		config.Logger = noopLogger
 	}
@@ -252,7 +264,7 @@ func accessLogFields(
 		if pathTemplate, ok := canonicalRouteTemplate(op.Path); ok {
 			fields = append(fields, zap.String("path_template", pathTemplate))
 		}
-		if validMetadataString(op.OperationID) {
+		if op.OperationID != "" {
 			fields = append(fields, zap.String("operation_id", op.OperationID))
 		}
 	}
@@ -265,7 +277,7 @@ func accessLogFields(
 	}
 	userAgent := ""
 	if config.CaptureUserAgent {
-		userAgent, _ = singleValidHeaderValue(rawHeaderValues(ctx, "User-Agent"))
+		userAgent, _ = singleValidUserAgent(rawHeaderValues(ctx, "User-Agent"))
 	}
 	if userAgent != "" {
 		fields = append(fields, zap.String("user_agent", userAgent))
@@ -283,22 +295,15 @@ func accessLogFields(
 	return fields
 }
 
-func validMetadataString(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, character := range value {
-		if character < 0x20 || character == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
-func singleValidHeaderValue(values []string) (string, bool) {
+func singleValidUserAgent(values []string) (string, bool) {
 	value, single := singleRawHeaderValue(values)
-	if !single || !validMetadataString(value) {
+	if !single || value == "" {
 		return "", false
+	}
+	for _, character := range []byte(value) {
+		if (character < 0x20 && character != '\t') || character == 0x7f {
+			return "", false
+		}
 	}
 	return value, true
 }
@@ -362,6 +367,7 @@ func isReservedLogField(key string) bool {
 		"severity",
 		"logger",
 		"caller",
+		"stacktrace",
 		"message",
 		"request_id",
 		"correlation_id",

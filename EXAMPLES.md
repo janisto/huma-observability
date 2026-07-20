@@ -106,7 +106,8 @@ Level 2 adds `trace_id_random`, derived from bit one of the preserved
 two-character `trace_flags`. Unsupported levels fail at middleware
 construction. Duplicate request-ID or `traceparent` field-lines are rejected
 as ambiguous, and `tracestate` is retained only after complete selected-level
-grammar, duplicate-key, 32-member, and 512-byte validation.
+grammar, duplicate-key, and 32-member validation. A valid value is not rejected
+merely because it exceeds the 512-character minimum propagation capacity.
 
 Raw path, direct peer IP, and user agent capture are disabled by default and
 have independent `AccessLoggerConfig` opt-ins. The GCP profile does not change

@@ -6,10 +6,7 @@ import (
 	"strings"
 )
 
-const (
-	maxTraceparentLen = 512
-	traceparentLen    = 55
-)
+const traceparentLen = 55
 
 // TraceContextLevel selects the W3C Trace Context grammar and flag semantics.
 type TraceContextLevel uint8
@@ -66,11 +63,11 @@ func ParseTraceparentWithLevel(value string, level TraceContextLevel) (TraceCont
 	if err != nil {
 		return TraceContext{}, false
 	}
-	if value == "" || len(value) > maxTraceparentLen || len(value) < traceparentLen {
+	if len(value) < traceparentLen {
 		return TraceContext{}, false
 	}
 	for _, character := range []byte(value) {
-		if character < 0x20 || character > 0x7e {
+		if (character < 0x20 && character != '\t') || character == 0x7f {
 			return TraceContext{}, false
 		}
 	}
@@ -128,9 +125,6 @@ func parseTracestate(rawValues []string, level TraceContextLevel) (string, bool)
 		return "", true
 	}
 	combined := strings.Join(rawValues, ",")
-	if len(combined) > maxTracestateLen {
-		return "", false
-	}
 	members := strings.Split(combined, ",")
 	if len(members) > 32 {
 		return "", false
