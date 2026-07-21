@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/zap"
@@ -26,6 +27,7 @@ type requestMetadata struct {
 	RequestID         string
 	CorrelationID     string
 	Trace             TraceContext
+	Preset            Preset
 	TraceContextLevel TraceContextLevel
 	Logger            *zap.Logger
 }
@@ -59,6 +61,7 @@ func RequestContext(config RequestContextConfig) func(huma.Context, func(huma.Co
 			}
 			ctx = huma.WithValue(ctx, contextKey{}, metadata)
 		} else {
+			requireMatchingPreset(metadata, cfg.Preset)
 			requireMatchingTraceContextLevel(metadata, cfg.TraceContextLevel)
 		}
 		if cfg.Logger != nil && metadata.Logger == nil {
@@ -179,7 +182,14 @@ func buildRequestMetadataFromHeaders(
 		RequestID:         requestID,
 		CorrelationID:     correlationID,
 		Trace:             trace,
+		Preset:            config.Preset,
 		TraceContextLevel: config.TraceContextLevel,
+	}
+}
+
+func requireMatchingPreset(metadata *requestMetadata, expected Preset) {
+	if metadata.Preset != expected {
+		panic("provider preset mismatch between RequestContext and AccessLogger")
 	}
 }
 
@@ -202,8 +212,12 @@ func ensureRequestMetadata(
 	preset Preset,
 	traceContextLevel TraceContextLevel,
 ) (*requestMetadata, huma.Context) {
-	config := normalizeRequestContextConfig(RequestContextConfig{TraceContextLevel: traceContextLevel})
+	config := normalizeRequestContextConfig(RequestContextConfig{
+		Preset:            preset,
+		TraceContextLevel: traceContextLevel,
+	})
 	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
+		requireMatchingPreset(metadata, config.Preset)
 		requireMatchingTraceContextLevel(metadata, config.TraceContextLevel)
 		return metadata, ctx
 	}
@@ -285,7 +299,8 @@ func validIncomingRequestID(value string, validate func(string) bool) (valid boo
 }
 
 func nativeSafeRequestID(value string) bool {
-	if value == "" {
+	if value == "" || !utf8.ValidString(value) || value[0] == ' ' || value[0] == '\t' ||
+		value[len(value)-1] == ' ' || value[len(value)-1] == '\t' {
 		return false
 	}
 	for index := range len(value) {

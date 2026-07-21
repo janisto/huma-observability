@@ -40,11 +40,18 @@ module path.
 
 ### Changed
 
+- Apply the RFC 9110 field-content and valid UTF-8 boundary before custom
+  request-ID validation, and skip optional access enrichment after Zap rejects
+  the effective level.
+- Expanded the provider-neutral basic example with the Level 1 default, an
+  explicit Level 2 handler path, and behavioral output tests.
 - Renamed remaining internal direct-peer helpers and fields so v2 source no
   longer models the removed portable `remote_ip` name. The required GCP
   `httpRequest.remoteIp` output member is unchanged.
 - Documented LF-terminated NDJSON as the logging boundary and added focused
   raw-writer coverage for independently parseable records.
+- Omit invalid UTF-8 User-Agent field values before Zap encoding can replace
+  their bytes; preserve framework-accepted Unicode and internal whitespace.
 
 - **Breaking:** Changed access logging to omit raw path, direct peer IP, and
   user agent by default. Applications that need the previous fields must enable
@@ -73,13 +80,21 @@ module path.
 
 ### Fixed
 
+- Prevent direct application Zap fields on package-created loggers from
+  overriding or duplicating reserved request, access, envelope, and provider
+  fields in raw NDJSON without replacing external Zap core admission behavior.
+- Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
+  0, 3, 6, or 9 digits according to the required precision.
 - Preserve framework-valid route parameter names, including extended and
   longer names, HTTP-safe opaque future `traceparent` suffixes without an
   invented length cap, valid `tracestate` beyond 512 characters, HTAB
   User-Agent values, custom-admitted request IDs, and nonempty static operation
-  IDs. Reject trace-level disagreement regardless of middleware order, reject
-  unknown presets consistently, reserve Zap `stacktrace`, and protect Zap-owned
+  IDs. Reject provider-preset or trace-level disagreement regardless of
+  middleware order, reject unknown presets consistently, reserve Zap
+  `stacktrace`, and protect Zap-owned
   caller and Level 2 trace fields.
+- Admit a comma in one request-ID field-line when the configured application
+  validator accepts it; real duplicate field-lines remain rejected.
 
 - Preserve sampling while omitting the Level 2 random flag for unknown future
   `traceparent` versions.

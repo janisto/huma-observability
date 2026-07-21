@@ -14,6 +14,77 @@ import (
 
 var noopLogger = zap.NewNop()
 
+type applicationCore struct {
+	zapcore.Core
+}
+
+func (core *applicationCore) With(fields []zap.Field) zapcore.Core {
+	return &applicationCore{Core: core.Core.With(filterApplicationFields(fields))}
+}
+
+func (core *applicationCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if core.Enabled(entry.Level) {
+		return checked.AddCore(entry, core)
+	}
+	return checked
+}
+
+func (core *applicationCore) Write(entry zapcore.Entry, fields []zap.Field) error {
+	return core.Core.Write(entry, filterApplicationFields(fields))
+}
+
+func filterApplicationFields(fields []zap.Field) []zap.Field {
+	hasReserved := false
+	for _, field := range fields {
+		if field.Type != zapcore.InlineMarshalerType && isReservedLogField(field.Key) {
+			hasReserved = true
+			break
+		}
+	}
+	if !hasReserved {
+		return fields
+	}
+	filtered := make([]zap.Field, 0, len(fields))
+	for _, field := range fields {
+		if field.Type == zapcore.InlineMarshalerType || !isReservedLogField(field.Key) {
+			filtered = append(filtered, field)
+		}
+	}
+	return filtered
+}
+
+func guardApplicationLogger(logger *zap.Logger) *zap.Logger {
+	if logger == nil {
+		logger = noopLogger
+	}
+	return logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		if _, guarded := core.(*applicationCore); guarded {
+			return core
+		}
+		return &applicationCore{Core: core}
+	}))
+}
+
+func unwrapApplicationLogger(logger *zap.Logger) (*zap.Logger, bool) {
+	if logger == nil {
+		return noopLogger, false
+	}
+	guarded := false
+	logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		if application, ok := core.(*applicationCore); ok {
+			guarded = true
+			return application.Core
+		}
+		return core
+	}))
+	return logger, guarded
+}
+
+func trustedLogger(logger *zap.Logger) *zap.Logger {
+	logger, _ = unwrapApplicationLogger(logger)
+	return logger
+}
+
 // Preset selects a JSON logger field shape.
 type Preset string
 
@@ -23,9 +94,9 @@ const (
 	// PresetGCP uses Google Cloud Logging severity field names and access-log
 	// support for Cloud Logging special JSON fields.
 	PresetGCP Preset = "gcp"
-	// PresetAWS uses flat JSON fields suitable for CloudWatch Logs ingestion.
+	// PresetAWS uses flat JSON with AWS-oriented correlation fields.
 	PresetAWS Preset = "aws"
-	// PresetAzure uses flat JSON fields suitable for Azure Monitor ingestion.
+	// PresetAzure uses flat JSON with Azure-oriented correlation fields.
 	PresetAzure Preset = "azure"
 )
 
@@ -186,7 +257,7 @@ func NewLogger(config LoggerConfig) (*zap.Logger, error) {
 	if config.Development {
 		options = append(options, zap.Development())
 	}
-	return zap.New(core, options...), nil
+	return guardApplicationLogger(zap.New(core, options...)), nil
 }
 
 // Logger returns the request-scoped logger from ctx, or a no-op logger when no

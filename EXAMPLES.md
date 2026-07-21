@@ -94,7 +94,7 @@ repository's test boundary.
 Representative GCP fields:
 
 ```json
-{"severity":"INFO","message":"request completed","request_id":"demo-123","correlation_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace_sampled":true,"method":"GET","duration_ms":12.5,"path_template":"/health","operation_id":"health_check","status":200,"httpRequest":{"requestMethod":"GET","status":200,"latency":"0.0125s"}}
+{"severity":"INFO","message":"request completed","request_id":"demo-123","correlation_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace":"4bf92f3577b34da6a3ce929d0e0e4736","logging.googleapis.com/trace_sampled":true,"method":"GET","duration_ms":12.5,"path_template":"/health","operation_id":"health_check","status":200,"httpRequest":{"requestMethod":"GET","status":200,"latency":"0.012500s"}}
 ```
 
 The package does not create spans and therefore does not manufacture
@@ -121,8 +121,13 @@ construction; pass `GCPProfileVersionV0_1_0` to pin it explicitly.
 go run ./examples/basic
 ```
 
-The default preset writes `level` and the generic correlation fields without
-provider-specific trace aliases.
+The executable leaves both trace-level fields unset and therefore uses Level
+1. To enable Level 2, follow `newLevel2Handler`, which assigns
+`TraceContextLevel2` to both middleware configs. The package test executes the
+default and Level 2 configurations against a version-`00` traceparent with
+flags `03`. The default preset writes `level` and generic
+correlation fields without provider-specific aliases; only Level 2 emits
+`trace_id_random`.
 
 ## AWS
 

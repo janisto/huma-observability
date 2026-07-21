@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/zap"
@@ -60,13 +61,17 @@ func AccessLogger(config AccessLoggerConfig) func(huma.Context, func(huma.Contex
 				} else if hasStatus {
 					level = safeStatusLevel(cfg.StatusLevel, status)
 				}
+				entry := trustedLogger(logger).Check(level, "request completed")
+				if entry == nil {
+					return
+				}
 
 				duration := safeDuration(cfg.Now, start, startOK)
 				fields := accessLogFields(ctx, status, hasStatus, terminalReason, duration, cfg)
 				if cfg.ExtraFields != nil {
 					fields = appendExtraFields(fields, safeExtraFields(cfg.ExtraFields, ctx))
 				}
-				logAt(logger, level, "request completed", fields...)
+				entry.Write(fields...)
 			}
 			containAccessLog(writeAccessLog)
 			if panicValue != nil {
@@ -179,21 +184,13 @@ func containAccessLog(write func()) (completed bool) {
 	return true
 }
 
-func logAt(logger *zap.Logger, level zapcore.Level, msg string, fields ...zap.Field) {
-	if logger == nil {
-		logger = noopLogger
-	}
-	if entry := logger.Check(level, msg); entry != nil {
-		entry.Write(fields...)
-	}
-}
-
 func loggerWithMetadata(logger *zap.Logger, metadata *requestMetadata, preset Preset) *zap.Logger {
-	if logger == nil {
-		logger = noopLogger
-	}
+	logger, guarded := unwrapApplicationLogger(logger)
 	logger = logger.With(requestMetadataFields(metadata)...)
 	if metadata == nil {
+		if guarded {
+			return guardApplicationLogger(logger)
+		}
 		return logger
 	}
 	switch preset {
@@ -203,6 +200,9 @@ func loggerWithMetadata(logger *zap.Logger, metadata *requestMetadata, preset Pr
 		logger = logger.With(awsTraceFields(metadata.Trace)...)
 	case PresetAzure:
 		logger = logger.With(azureTraceFields(metadata.Trace)...)
+	}
+	if guarded {
+		return guardApplicationLogger(logger)
 	}
 	return logger
 }
@@ -297,7 +297,8 @@ func accessLogFields(
 
 func singleValidUserAgent(values []string) (string, bool) {
 	value, single := singleRawHeaderValue(values)
-	if !single || value == "" {
+	if !single || value == "" || !utf8.ValidString(value) || value[0] == ' ' || value[0] == '\t' ||
+		value[len(value)-1] == ' ' || value[len(value)-1] == '\t' {
 		return "", false
 	}
 	for _, character := range []byte(value) {
@@ -361,6 +362,11 @@ func appendExtraFields(fields, extra []zap.Field) []zap.Field {
 }
 
 func isReservedLogField(key string) bool {
+	if strings.HasPrefix(key, "logging.googleapis.com/") ||
+		strings.HasPrefix(key, "obs.") ||
+		strings.HasPrefix(key, "_obs_") {
+		return true
+	}
 	switch key {
 	case "timestamp",
 		"level",
@@ -511,7 +517,14 @@ func formatProtoDuration(duration time.Duration) string {
 		return fmt.Sprintf("%ds", seconds)
 	}
 
-	fraction := fmt.Sprintf("%09d", nanos)
-	fraction = strings.TrimRight(fraction, "0")
+	var fraction string
+	switch {
+	case nanos%1_000_000 == 0:
+		fraction = fmt.Sprintf("%03d", nanos/1_000_000)
+	case nanos%1_000 == 0:
+		fraction = fmt.Sprintf("%06d", nanos/1_000)
+	default:
+		fraction = fmt.Sprintf("%09d", nanos)
+	}
 	return fmt.Sprintf("%d.%ss", seconds, fraction)
 }

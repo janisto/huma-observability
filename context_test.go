@@ -191,14 +191,31 @@ func TestRequestContextUsesCustomRequestIDPolicy(t *testing.T) {
 func TestNativeRequestIDBoundaryAllowsOnlyHTTPFieldText(t *testing.T) {
 	t.Parallel()
 
-	for _, value := range []string{"\t", " ", "~", "\x80", "\xff"} {
+	for _, value := range []string{"~", "tenant request", "tenant\trequest", "\u0080", "\u00ff"} {
 		if !nativeSafeRequestID(value) {
 			t.Fatalf("native-safe request ID boundary %q was rejected", value)
 		}
 	}
-	for _, value := range []string{"", "\x00", "\x1f", "\x7f"} {
+	for _, value := range []string{"", " ", "\t", " tenant", "tenant ", "\ttenant", "tenant\t", "\x00", "\x1f", "\x7f", "\x80", "\xff"} {
 		if nativeSafeRequestID(value) {
 			t.Fatalf("unsafe request ID boundary %q was accepted", value)
+		}
+	}
+}
+
+func TestCustomRequestIDValidatorRunsOnlyForRFCFieldContent(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"tenant request", "tenant\trequest", "tenant,request"} {
+		calls := 0
+		if !validIncomingRequestID(value, func(string) bool { calls++; return true }) || calls != 1 {
+			t.Fatalf("valid field content %q: accepted=false or calls=%d", value, calls)
+		}
+	}
+	for _, value := range []string{" tenant", "tenant ", "\x80"} {
+		calls := 0
+		if validIncomingRequestID(value, func(string) bool { calls++; return true }) || calls != 0 {
+			t.Fatalf("unsafe field content %q reached validator %d times", value, calls)
 		}
 	}
 }

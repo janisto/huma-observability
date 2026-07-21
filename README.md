@@ -79,8 +79,9 @@ Use this package when your Huma v2 service needs:
 - Router-wide request metadata for health checks, readiness probes, redirects,
   static handlers, 404/405 handlers, and recovery middleware.
 - W3C `traceparent` parsing for trace-level log correlation.
-- Cloud-oriented log fields for Google Cloud Logging, AWS CloudWatch/X-Ray
-  query paths, or Azure Monitor/Application Insights ingestion.
+- Cloud-oriented log fields for Google Cloud Logging and provider-shaped AWS
+  X-Ray or Azure Application Insights correlation. The AWS and Azure presets do
+  not configure collection or submit telemetry.
 
 It also does not export metrics, create AWS X-Ray segments, or emit generic
 `net/http` access logs.
@@ -239,6 +240,12 @@ api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 }))
 ```
 
+The provider-neutral [`examples/basic`](examples/basic) leaves the trace-level
+fields unset for its default Level 1 server. Its `newLevel2Handler` shows the
+Level 2 opt-in by assigning `TraceContextLevel2` to both middleware configs.
+The native test sends flags `03` through both paths and verifies that only
+Level 2 emits `trace_id_random`.
+
 `ResolveTraceContextLevel(0)` exposes the effective default. Unsupported
 levels fail during middleware construction. Exactly one raw `traceparent`
 field-line is eligible. Version `00` uses exact framing; future-version suffix
@@ -278,6 +285,8 @@ global tracer providers.
 
 Use the same preset for `NewLogger`, `RequestContext`, `AccessLogger`, and
 `HTTPRequestContext` when those pieces are used together.
+A preset mismatch is rejected at the first request-composition boundary,
+regardless of middleware order.
 
 ### Google Cloud
 
@@ -396,13 +405,18 @@ Huma access log fields:
 - `duration_ms`
 - `terminal_reason`, set to `panic` for an escaping panic
 - `peer_ip` when `CapturePeerIP` is enabled; this is the direct transport peer
-- `user_agent` when `CaptureUserAgent` is enabled
+- `user_agent` when `CaptureUserAgent` is enabled and exactly one UTF-8 RFC
+  9110 field-content value is available
 - `httpRequest` for GCP
 
 Huma operation paths already use the portable whole-segment `{name}` form.
 Only valid canonical operation paths are emitted. The selected Huma middleware
 boundary runs for registered operations, so it does not claim unmatched-route
 or router-specific catch-all access records; those remain router-owned.
+Huma's OpenAPI operation registry also rejects methods outside its supported
+method set before this middleware can run. The package records the framework
+method for supported operations and does not claim arbitrary extension-method
+case preservation.
 
 The three capture options are independent and default to false. Selecting GCP
 does not enable them. When path capture is enabled, GCP
@@ -429,9 +443,14 @@ repeats a custom key, the first value wins. Inline object marshalers are ignored
 because their inner keys cannot be checked safely before they enter the access
 record namespace.
 
-That collision guarantee applies to package-controlled context and access
-merges. Arbitrary fields passed directly to a raw Zap logger are application
-owned; callers must not reuse package-reserved names or emit duplicate keys.
+The logger returned by `NewLogger`, including request-scoped derivatives of
+that logger returned by `Logger(ctx)`, drops direct reserved Zap fields before
+encoding while preserving ordinary application fields and Zap's native
+application-error field. Inline marshalers, externally supplied Zap loggers,
+and custom core wrappers placed around a package logger cannot be inspected or
+rewrapped safely without changing core admission, sampling, or hook behavior;
+their fields remain integration preconditions. A raw Zap logger that never
+passes through this package is outside the contract.
 
 ## Request IDs
 
@@ -446,9 +465,11 @@ Default `RequestContext` and `HTTPRequestContext` behavior:
 
 Incoming request IDs use 1–128 ASCII letters, digits, `-`, `.`, `_`, and
 `~` by default. A custom validator may admit a broader nonempty value within
-Go's native HTTP field-value boundary, including punctuation, obs-text bytes,
-and values longer than 128 bytes. It is applied only to caller input, never to
-generated or package-fallback IDs. A configured generator is tried exactly
+RFC 9110 field content and Go's exact response-header/UTF-8 JSON boundary,
+including punctuation, internal space or tab, Unicode text, and values longer
+than 128 bytes. Edge whitespace, controls, and invalid UTF-8 bytes are rejected
+before the callback. It is applied only to caller input, never to generated or
+package-fallback IDs. A configured generator is tried exactly
 twice unless its first result passes the baseline. Validator and generator
 panics are contained as rejection/failure and do not bypass the handler.
 Multiple raw request-ID or `traceparent` field-lines are

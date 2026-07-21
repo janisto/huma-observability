@@ -84,7 +84,7 @@ func TestNewLoggerWritesLFTerminatedNDJSONRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.Info("first\nlogical message")
+	logger.Info("first ✓\nlogical message")
 	logger.Error("second message")
 
 	output := buffer.String()
@@ -95,7 +95,7 @@ func TestNewLoggerWritesLFTerminatedNDJSONRecords(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("physical line count = %d, want 2; output=%q", len(lines), output)
 	}
-	wantMessages := []string{"first\nlogical message", "second message"}
+	wantMessages := []string{"first ✓\nlogical message", "second message"}
 	for index, line := range lines {
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
@@ -104,6 +104,44 @@ func TestNewLoggerWritesLFTerminatedNDJSONRecords(t *testing.T) {
 		if got := record["message"]; got != wantMessages[index] {
 			t.Fatalf("line %d message = %#v, want %q", index, got, wantMessages[index])
 		}
+	}
+}
+
+func TestLoggerWithMetadataPreservesExternalCoreSampling(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.TimeKey = ""
+	core := zapcore.NewSamplerWithOptions(
+		zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderConfig),
+			zapcore.AddSync(&output),
+			zapcore.DebugLevel,
+		),
+		time.Hour,
+		1,
+		0,
+	)
+	logger := loggerWithMetadata(
+		zap.New(core),
+		&requestMetadata{RequestID: "req-external-core"},
+		PresetDefault,
+	)
+
+	logger.Info("sampled")
+	logger.Info("sampled")
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("external sampler wrote %d records, want 1: %q", len(lines), output.String())
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("decode sampled record: %v", err)
+	}
+	if got := record["request_id"]; got != "req-external-core" {
+		t.Fatalf("request_id = %#v, want req-external-core", got)
 	}
 }
 

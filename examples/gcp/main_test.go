@@ -68,7 +68,7 @@ func TestGCPHealthRouteEmitsCorrelatedApplicationAndAccessRecords(t *testing.T) 
 	}
 	assertLogField(t, httpRequest, "requestMethod", http.MethodGet)
 	assertLogField(t, httpRequest, "status", float64(http.StatusOK))
-	assertLogField(t, httpRequest, "latency", "0.0125s")
+	assertLogField(t, httpRequest, "latency", "0.012500s")
 	for _, privateField := range []string{"requestUrl", "remoteIp", "userAgent"} {
 		if _, ok := httpRequest[privateField]; ok {
 			t.Fatalf("httpRequest unexpectedly contains privacy field %q: %#v", privateField, httpRequest)

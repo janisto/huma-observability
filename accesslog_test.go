@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +22,11 @@ import (
 
 type panickingAccessWriter struct{}
 
+type countingFailingAccessWriter struct {
+	calls *int
+	err   error
+}
+
 type reservedInlineFields struct{}
 
 func (reservedInlineFields) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
@@ -30,6 +37,11 @@ func (reservedInlineFields) MarshalLogObject(encoder zapcore.ObjectEncoder) erro
 
 func (panickingAccessWriter) Write([]byte) (int, error) {
 	panic("writer failed")
+}
+
+func (writer countingFailingAccessWriter) Write([]byte) (int, error) {
+	(*writer.calls)++
+	return 0, writer.err
 }
 
 func TestAccessLoggerIntegrationLogsAccessAndHandlerLines(t *testing.T) {
@@ -113,6 +125,96 @@ func TestAccessLoggerIntegrationLogsAccessAndHandlerLines(t *testing.T) {
 	assertAccessField(t, access, "peer_ip", "127.0.0.1")
 	assertAccessField(t, access, "user_agent", "observability-test")
 	assertAccessField(t, access, "tenant_id", "tenant-1")
+}
+
+func TestApplicationLoggerDropsReservedFieldsWithoutChangingAccessRecord(t *testing.T) {
+	t.Parallel()
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const traceparent = "00-" + traceID + "-00f067aa0ba902b7-01"
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Preset: PresetAzure, Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/guarded", map[string]string{
+		defaultRequestIDHeader:   "canonical-request",
+		defaultTraceparentHeader: traceparent,
+	})
+
+	AccessLogger(AccessLoggerConfig{
+		Logger: logger,
+		Preset: PresetAzure,
+		Now: fixedClock(
+			time.Unix(1, 0),
+			time.Unix(1, int64(5*time.Millisecond)),
+		),
+	})(ctx, func(inner huma.Context) {
+		Logger(inner.Context()).Info(
+			"guarded application event",
+			zap.String("request_id", "spoofed-request"),
+			zap.String("trace_id", "00000000000000000000000000000001"),
+			zap.String("operation_Id", "spoofed-operation"),
+			zap.String("method", "DELETE"),
+			zap.Int("status", 599),
+			zap.String("message", "spoofed-message"),
+			zap.String("logging.googleapis.com/future", "spoofed-provider"),
+			zap.Bool("obs.internal", true),
+			zap.String("error", "controlled application error"),
+			zap.String("tenant_id", "tenant-1"),
+		)
+		inner.SetStatus(http.StatusNoContent)
+	})
+
+	rawLines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+	if len(rawLines) != 2 {
+		t.Fatalf("log line count = %d, want 2; output=%s", len(rawLines), buffer.String())
+	}
+	applicationLine := rawLines[0]
+	for _, key := range []string{"request_id", "trace_id", "operation_Id", "message", "tenant_id"} {
+		if count := strings.Count(applicationLine, `"`+key+`"`); count != 1 {
+			t.Fatalf("%s key count = %d, want 1; line=%s", key, count, applicationLine)
+		}
+	}
+	for _, key := range []string{"method", "status", "logging.googleapis.com/future", "obs.internal"} {
+		if count := strings.Count(applicationLine, `"`+key+`"`); count != 0 {
+			t.Fatalf("%s key count = %d, want 0; line=%s", key, count, applicationLine)
+		}
+	}
+	application := decodeSingleLogLine(t, applicationLine)
+	assertAccessField(t, application, "message", "guarded application event")
+	assertAccessField(t, application, "request_id", "canonical-request")
+	assertAccessField(t, application, "trace_id", traceID)
+	assertAccessField(t, application, "operation_Id", traceID)
+	assertAccessField(t, application, "error", "controlled application error")
+	assertAccessField(t, application, "tenant_id", "tenant-1")
+
+	access := decodeSingleLogLine(t, rawLines[1])
+	assertAccessField(t, access, "message", "request completed")
+	assertAccessField(t, access, "method", http.MethodGet)
+	assertAccessField(t, access, "status", float64(http.StatusNoContent))
+	assertAccessField(t, access, "request_id", "canonical-request")
+}
+
+func TestHumaRejectsExtensionMethodRegistrationBeforeAccessMiddleware(t *testing.T) {
+	t.Parallel()
+
+	_, api := humatest.New(t)
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("Huma accepted an extension method outside its OpenAPI method set")
+		} else if !strings.Contains(fmt.Sprint(recovered), "unknown method m-SEARCH") {
+			t.Fatalf("unexpected registration panic: %v", recovered)
+		}
+	}()
+
+	huma.Register(api, huma.Operation{
+		OperationID: "extension-search",
+		Method:      "m-SEARCH",
+		Path:        "/search",
+	}, func(context.Context, *struct{}) (*testOutput, error) {
+		return &testOutput{Body: testBody{OK: true}}, nil
+	})
 }
 
 func TestRequestIDScenariosReplaceAmbiguousValuesBeforeTerminalOutput(t *testing.T) {
@@ -271,6 +373,43 @@ func TestComposedMiddlewareRejectsTraceContextLevelMismatchInEitherOrder(t *test
 	}
 }
 
+func TestComposedMiddlewareRejectsProviderPresetMismatchInEitherOrder(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name          string
+		requestPreset Preset
+		accessPreset  Preset
+		requestOuter  bool
+	}{
+		{name: "request outer", requestPreset: PresetGCP, accessPreset: PresetAzure, requestOuter: true},
+		{name: "access outer", requestPreset: PresetGCP, accessPreset: PresetAzure},
+		{name: "reverse providers request outer", requestPreset: PresetAWS, accessPreset: PresetGCP, requestOuter: true},
+		{name: "reverse providers access outer", requestPreset: PresetAWS, accessPreset: PresetGCP},
+		{name: "core to GCP request outer", requestPreset: PresetDefault, accessPreset: PresetGCP, requestOuter: true},
+		{name: "core to GCP access outer", requestPreset: PresetDefault, accessPreset: PresetGCP},
+		{name: "GCP to core request outer", requestPreset: PresetGCP, accessPreset: PresetDefault, requestOuter: true},
+		{name: "GCP to core access outer", requestPreset: PresetGCP, accessPreset: PresetDefault},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, _ := newHumaTestContext(http.MethodGet, "/test", nil)
+			request := RequestContext(RequestContextConfig{Preset: tt.requestPreset})
+			access := AccessLogger(AccessLoggerConfig{Preset: tt.accessPreset})
+			defer func() {
+				if got := recover(); got != "provider preset mismatch between RequestContext and AccessLogger" {
+					t.Fatalf("mismatch panic = %v", got)
+				}
+			}()
+			if tt.requestOuter {
+				request(ctx, func(next huma.Context) { access(next, func(huma.Context) {}) })
+			} else {
+				access(ctx, func(next huma.Context) { request(next, func(huma.Context) {}) })
+			}
+		})
+	}
+}
+
 func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 	t.Parallel()
 
@@ -354,15 +493,60 @@ func TestAccessMetadataPreservesStaticOperationIDsAndValidUserAgentWhitespace(t 
 	if value, ok := singleValidUserAgent([]string{"agent/1\tcomponent/2"}); !ok || value != "agent/1\tcomponent/2" {
 		t.Fatalf("valid tab-separated User-Agent = %q, %v", value, ok)
 	}
-	for _, value := range []string{" ", "~", "\x80", "\xff"} {
+	for _, value := range []string{"~", "agent/1 component/2", "\u0080", "\u00ff"} {
 		if got, ok := singleValidUserAgent([]string{value}); !ok || got != value {
 			t.Fatalf("valid User-Agent boundary %q = %q, %v", value, got, ok)
 		}
 	}
-	for _, value := range []string{"\x00", "\x1f", "\x7f"} {
+	for _, value := range []string{" ", "\t", " edge", "edge ", "\x00", "\x1f", "\x7f", "\x80", "\xff"} {
 		if got, ok := singleValidUserAgent([]string{value}); ok || got != "" {
 			t.Fatalf("unsafe User-Agent boundary %q = %q, %v", value, got, ok)
 		}
+	}
+}
+
+func TestAccessLoggerPreservesValidUnicodeUserAgentThroughRouteAndWriter(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "unicode", value: "\u0080\u00ff"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			handler, api := humatest.New(t)
+			api.UseMiddleware(AccessLogger(AccessLoggerConfig{
+				Logger:           logger,
+				CaptureUserAgent: true,
+			}))
+			huma.Register(api, huma.Operation{
+				OperationID: "get-user-agent",
+				Method:      http.MethodGet,
+				Path:        "/user-agent",
+			}, func(context.Context, *struct{}) (*testOutput, error) {
+				return &testOutput{Body: testBody{OK: true}}, nil
+			})
+
+			request := httptest.NewRequestWithContext(
+				t.Context(), http.MethodGet, "/user-agent", nil,
+			)
+			request.Header["User-Agent"] = []string{test.value}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("response status = %d, want 200", response.Code)
+			}
+			entry := decodeLogLines(t, buffer.String())
+			if len(entry) != 1 {
+				t.Fatalf("log line count = %d, want 1", len(entry))
+			}
+			assertAccessField(t, entry[0], "user_agent", test.value)
+		})
 	}
 }
 
@@ -631,11 +815,16 @@ func TestAccessLoggerSuppressedCustomLevelDoesNotEmit(t *testing.T) {
 		defaultRequestIDHeader: "req-suppressed",
 	})
 	called := false
+	extraCalls := 0
 
 	AccessLogger(AccessLoggerConfig{
 		Logger: logger,
 		StatusLevel: func(int) zapcore.Level {
 			return zapcore.DebugLevel
+		},
+		ExtraFields: func(huma.Context) []zap.Field {
+			extraCalls++
+			return []zap.Field{zap.String("unexpected", "value")}
 		},
 	})(ctx, func(ctx huma.Context) {
 		called = true
@@ -647,6 +836,9 @@ func TestAccessLoggerSuppressedCustomLevelDoesNotEmit(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buffer.String()); got != "" {
 		t.Fatalf("disabled debug access log was emitted: %s", got)
+	}
+	if extraCalls != 0 {
+		t.Fatalf("ExtraFields called %d times for a disabled log level", extraCalls)
 	}
 }
 
@@ -775,27 +967,73 @@ func TestAccessLoggerPanicPreservesAlreadyObservedStatus(t *testing.T) {
 	assertAccessField(t, entry, "terminal_reason", "panic")
 }
 
-func TestAccessLoggerPreservesHandlerPanicWhenEnrichmentPanics(t *testing.T) {
+func TestAccessLoggerPreservesHandlerPanicWhenTelemetryFails(t *testing.T) {
 	t.Parallel()
 	type panicMarker struct{ name string }
 	handlerPanic := &panicMarker{name: "handler"}
 	enrichmentPanic := &panicMarker{name: "enrichment"}
-	ctx, _ := newHumaTestContext(http.MethodGet, "/panic", nil)
-
-	var recovered any
-	func() {
-		defer func() { recovered = recover() }()
-		AccessLogger(AccessLoggerConfig{
-			ExtraFields: func(huma.Context) []zap.Field {
-				panic(enrichmentPanic)
+	for _, test := range []struct {
+		name   string
+		config func(t *testing.T) AccessLoggerConfig
+	}{
+		{
+			name: "enrichment panic",
+			config: func(*testing.T) AccessLoggerConfig {
+				return AccessLoggerConfig{ExtraFields: func(huma.Context) []zap.Field { panic(enrichmentPanic) }}
 			},
-		})(ctx, func(huma.Context) {
-			panic(handlerPanic)
+		},
+		{
+			name: "writer panic",
+			config: func(t *testing.T) AccessLoggerConfig {
+				t.Helper()
+				logger, err := NewLogger(LoggerConfig{Writer: panickingAccessWriter{}})
+				if err != nil {
+					t.Fatalf("NewLogger returned error: %v", err)
+				}
+				return AccessLoggerConfig{Logger: logger}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, _ := newHumaTestContext(http.MethodGet, "/panic", nil)
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				AccessLogger(test.config(t))(ctx, func(huma.Context) { panic(handlerPanic) })
+			}()
+			if recovered != handlerPanic {
+				t.Fatalf("recovered panic = %#v, want original %#v", recovered, handlerPanic)
+			}
 		})
-	}()
+	}
+}
 
-	if recovered != handlerPanic {
-		t.Fatalf("recovered panic = %#v, want original %#v", recovered, handlerPanic)
+func TestAccessLoggerDoesNotRetryWriterOrRecurseWhenDiagnosticSinkFails(t *testing.T) {
+	t.Parallel()
+	mainCalls := 0
+	diagnosticCalls := 0
+	logger, err := NewLogger(LoggerConfig{
+		Writer: countingFailingAccessWriter{calls: &mainCalls, err: errors.New("writer failed")},
+		ErrorWriter: countingFailingAccessWriter{
+			calls: &diagnosticCalls, err: errors.New("diagnostic failed"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/test", nil)
+	handlerCalled := false
+
+	AccessLogger(AccessLoggerConfig{Logger: logger})(ctx, func(huma.Context) {
+		handlerCalled = true
+	})
+
+	if !handlerCalled {
+		t.Fatal("telemetry failure changed handler execution")
+	}
+	if mainCalls != 1 || diagnosticCalls != 1 {
+		t.Fatalf("writes = main %d, diagnostic %d; want exactly one each", mainCalls, diagnosticCalls)
 	}
 }
 
@@ -1254,7 +1492,7 @@ func TestAccessLoggerGCPFields(t *testing.T) {
 		"User-Agent":             "gcp-test",
 	})
 
-	RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+	RequestContext(RequestContextConfig{Preset: PresetGCP})(ctx, func(ctx huma.Context) {
 		AccessLogger(AccessLoggerConfig{
 			Logger:           logger,
 			Preset:           PresetGCP,
@@ -1292,7 +1530,7 @@ func TestAccessLoggerGCPFields(t *testing.T) {
 	assertAccessField(t, httpRequest, "status", float64(http.StatusOK))
 	assertAccessField(t, httpRequest, "userAgent", "gcp-test")
 	assertAccessField(t, httpRequest, "remoteIp", "203.0.113.9")
-	assertAccessField(t, httpRequest, "latency", "1.5s")
+	assertAccessField(t, httpRequest, "latency", "1.500s")
 }
 
 func TestProviderTraceHeadersWithoutW3CAreIgnored(t *testing.T) {
@@ -1363,7 +1601,7 @@ func TestProviderTraceHeadersWithoutW3CAreIgnored(t *testing.T) {
 			}
 			ctx, _ := newHumaTestContext(http.MethodGet, "/test", headers)
 
-			RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+			RequestContext(RequestContextConfig{Preset: tt.preset})(ctx, func(ctx huma.Context) {
 				AccessLogger(AccessLoggerConfig{
 					Logger: logger,
 					Preset: tt.preset,
@@ -1454,7 +1692,7 @@ func TestInvalidW3CTraceparentSuppressesCloudCorrelationFields(t *testing.T) {
 			maps.Copy(headers, tt.headers)
 			ctx, _ := newHumaTestContext(http.MethodGet, "/test", headers)
 
-			RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+			RequestContext(RequestContextConfig{Preset: tt.preset})(ctx, func(ctx huma.Context) {
 				AccessLogger(AccessLoggerConfig{
 					Logger: logger,
 					Preset: tt.preset,
@@ -1486,7 +1724,7 @@ func TestAccessLoggerAWSAndAzureStayFlatJSON(t *testing.T) {
 			ctx, _ := newHumaTestContext(http.MethodPost, "/flat", map[string]string{
 				defaultRequestIDHeader: "req-flat",
 			})
-			RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+			RequestContext(RequestContextConfig{Preset: preset})(ctx, func(ctx huma.Context) {
 				AccessLogger(AccessLoggerConfig{Logger: logger, Preset: preset})(ctx, func(ctx huma.Context) {
 					ctx.SetStatus(http.StatusCreated)
 				})
@@ -1523,6 +1761,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 		rejectKeys []string
 		wantLevel  string
 		levelKey   string
+		traceLevel TraceContextLevel
 	}{
 		{
 			name:    "gcp raw trace id unsampled",
@@ -1579,6 +1818,35 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			wantLevel: "INFO",
 			levelKey:  "level",
 		},
+		{
+			name:       "aws xray id with level two random flag",
+			preset:     PresetAWS,
+			flags:      "03",
+			sampled:    true,
+			traceLevel: TraceContextLevel2,
+			wantFields: map[string]any{
+				"trace_id_random": true,
+				"xray_trace_id":   "1-4efaaf4d-1e8720b39541901950019ee5",
+			},
+			rejectKeys: []string{"operation_Id", "operation_ParentId"},
+			wantLevel:  "INFO",
+			levelKey:   "level",
+		},
+		{
+			name:       "azure operation fields with level two random flag",
+			preset:     PresetAzure,
+			flags:      "03",
+			sampled:    true,
+			traceLevel: TraceContextLevel2,
+			wantFields: map[string]any{
+				"trace_id_random":    true,
+				"operation_Id":       traceID,
+				"operation_ParentId": parentID,
+			},
+			rejectKeys: []string{"xray_trace_id"},
+			wantLevel:  "INFO",
+			levelKey:   "level",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1599,8 +1867,12 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 				"X-Cloud-Trace-Context":  "cccccccccccccccccccccccccccccccc/123;o=1",
 			})
 
-			RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
-				AccessLogger(AccessLoggerConfig{Logger: logger, Preset: tt.preset})(ctx, func(ctx huma.Context) {
+			RequestContext(RequestContextConfig{
+				Preset: tt.preset, TraceContextLevel: tt.traceLevel,
+			})(ctx, func(ctx huma.Context) {
+				AccessLogger(AccessLoggerConfig{
+					Logger: logger, Preset: tt.preset, TraceContextLevel: tt.traceLevel,
+				})(ctx, func(ctx huma.Context) {
 					Logger(ctx.Context()).Info("handler cloud log")
 				})
 			})
@@ -1619,6 +1891,57 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 					assertAccessField(t, entry, key, want)
 				}
 				for _, key := range tt.rejectKeys {
+					assertNoAccessField(t, entry, key)
+				}
+			}
+		})
+	}
+}
+
+func TestAWSAndAzureProfilesOmitDuplicateTraceparentCorrelation(t *testing.T) {
+	t.Parallel()
+	for _, preset := range []Preset{PresetAWS, PresetAzure} {
+		t.Run(string(preset), func(t *testing.T) {
+			t.Parallel()
+			var buffer bytes.Buffer
+			logger, err := NewLogger(LoggerConfig{Preset: preset, Writer: &buffer})
+			if err != nil {
+				t.Fatalf("NewLogger returned error: %v", err)
+			}
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/trace", nil)
+			request.Header.Set(defaultRequestIDHeader, "duplicate-trace")
+			request.Header[http.CanonicalHeaderKey(defaultTraceparentHeader)] = []string{
+				"00-4efaaf4d1e8720b39541901950019ee5-00f067aa0ba902b7-03",
+				"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			}
+			ctx := humatest.NewContext(
+				&huma.Operation{
+					Method:        http.MethodGet,
+					Path:          "/trace",
+					OperationID:   "trace",
+					DefaultStatus: http.StatusOK,
+				},
+				request,
+				httptest.NewRecorder(),
+			)
+
+			RequestContext(RequestContextConfig{
+				Preset: preset, TraceContextLevel: TraceContextLevel2,
+			})(ctx, func(ctx huma.Context) {
+				AccessLogger(AccessLoggerConfig{
+					Logger: logger, Preset: preset, TraceContextLevel: TraceContextLevel2,
+				})(ctx, func(ctx huma.Context) {
+					Logger(ctx.Context()).Info("handler")
+				})
+			})
+
+			for _, entry := range decodeLogLines(t, buffer.String()) {
+				assertAccessField(t, entry, "request_id", "duplicate-trace")
+				assertAccessField(t, entry, "correlation_id", "duplicate-trace")
+				for _, key := range []string{
+					"trace_id", "parent_id", "trace_flags", "trace_sampled", "trace_id_random",
+					"xray_trace_id", "operation_Id", "operation_ParentId",
+				} {
 					assertNoAccessField(t, entry, key)
 				}
 			}
@@ -1653,7 +1976,7 @@ func TestAccessLoggerFiltersProviderReservedExtraFields(t *testing.T) {
 				defaultTraceparentHeader: traceparent,
 			})
 
-			RequestContext(RequestContextConfig{})(ctx, func(ctx huma.Context) {
+			RequestContext(RequestContextConfig{Preset: preset})(ctx, func(ctx huma.Context) {
 				AccessLogger(AccessLoggerConfig{
 					Logger: logger,
 					Preset: preset,
@@ -1870,8 +2193,10 @@ func TestFormatProtoDuration(t *testing.T) {
 	}{
 		{in: -time.Millisecond, want: "0s"},
 		{in: 0, want: "0s"},
+		{in: 10 * time.Millisecond, want: "0.010s"},
+		{in: 12_500 * time.Microsecond, want: "0.012500s"},
 		{in: 3 * time.Second, want: "3s"},
-		{in: 1500 * time.Millisecond, want: "1.5s"},
+		{in: 1500 * time.Millisecond, want: "1.500s"},
 		{in: time.Second + time.Nanosecond, want: "1.000000001s"},
 	}
 
