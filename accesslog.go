@@ -69,7 +69,7 @@ func AccessLogger(config AccessLoggerConfig) func(huma.Context, func(huma.Contex
 				duration := safeDuration(cfg.Now, start, startOK)
 				fields := accessLogFields(ctx, status, hasStatus, terminalReason, duration, cfg)
 				if cfg.ExtraFields != nil {
-					fields = appendExtraFields(fields, safeExtraFields(cfg.ExtraFields, ctx))
+					fields = appendExtraFields(fields, safeExtraFields(cfg.ExtraFields, ctx), cfg.Preset)
 				}
 				entry.Write(fields...)
 			}
@@ -189,7 +189,7 @@ func loggerWithMetadata(logger *zap.Logger, metadata *requestMetadata, preset Pr
 	logger = logger.With(requestMetadataFields(metadata)...)
 	if metadata == nil {
 		if guarded {
-			return guardApplicationLogger(logger)
+			return guardApplicationLogger(logger, preset)
 		}
 		return logger
 	}
@@ -202,7 +202,7 @@ func loggerWithMetadata(logger *zap.Logger, metadata *requestMetadata, preset Pr
 		logger = logger.With(azureTraceFields(metadata.Trace)...)
 	}
 	if guarded {
-		return guardApplicationLogger(logger)
+		return guardApplicationLogger(logger, preset)
 	}
 	return logger
 }
@@ -310,49 +310,32 @@ func singleValidUserAgent(values []string) (string, bool) {
 }
 
 func canonicalRouteTemplate(native string) (string, bool) {
-	if !strings.HasPrefix(native, "/") || strings.ContainsAny(native, "?#") {
-		return "", false
-	}
-	for segment := range strings.SplitSeq(strings.TrimPrefix(native, "/"), "/") {
-		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
-			name := strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
-			if !isRouteParameterName(name) {
-				return "", false
-			}
-			continue
-		}
-		if strings.ContainsAny(segment, "{}*") {
-			return "", false
-		}
-	}
-	return native, true
+	return native, native != ""
 }
 
-func isRouteParameterName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, character := range name {
-		if character < 0x20 || character == 0x7f || strings.ContainsRune("/{}*?#", character) {
-			return false
-		}
-	}
-	return true
-}
-
-func appendExtraFields(fields, extra []zap.Field) []zap.Field {
+func appendExtraFields(fields, extra []zap.Field, preset Preset) []zap.Field {
 	seen := make(map[string]struct{})
 	for _, field := range fields {
 		seen[field.Key] = struct{}{}
 	}
+	nested := false
 	for _, field := range extra {
 		if field.Type == zapcore.InlineMarshalerType {
 			continue
 		}
-		if isReservedLogField(field.Key) {
+		if field.Type == zapcore.NamespaceType {
+			if _, exists := seen[field.Key]; exists || !nested && isReservedLogField(field.Key, preset) {
+				break
+			}
+			fields = append(fields, field)
+			seen = make(map[string]struct{})
+			nested = true
 			continue
 		}
 		if _, exists := seen[field.Key]; exists {
+			continue
+		}
+		if !nested && isReservedLogField(field.Key, preset) {
 			continue
 		}
 		seen[field.Key] = struct{}{}
@@ -361,16 +344,9 @@ func appendExtraFields(fields, extra []zap.Field) []zap.Field {
 	return fields
 }
 
-func isReservedLogField(key string) bool {
-	if strings.HasPrefix(key, "logging.googleapis.com/") ||
-		strings.HasPrefix(key, "obs.") ||
-		strings.HasPrefix(key, "_obs_") {
-		return true
-	}
+func isReservedLogField(key string, preset Preset) bool {
 	switch key {
 	case "timestamp",
-		"level",
-		"severity",
 		"logger",
 		"caller",
 		"stacktrace",
@@ -382,9 +358,6 @@ func isReservedLogField(key string) bool {
 		"trace_flags",
 		"trace_sampled",
 		"trace_id_random",
-		"xray_trace_id",
-		"operation_Id",
-		"operation_ParentId",
 		"method",
 		"path",
 		"path_template",
@@ -393,13 +366,28 @@ func isReservedLogField(key string) bool {
 		"duration_ms",
 		"terminal_reason",
 		"peer_ip",
-		"remote_ip",
-		"user_agent",
-		"httpRequest",
-		"logging.googleapis.com/trace",
-		"logging.googleapis.com/trace_sampled",
-		"logging.googleapis.com/spanId":
+		"user_agent":
 		return true
+	}
+	if key == "severity" {
+		return preset == PresetGCP
+	}
+	if key == "level" {
+		return preset != PresetGCP
+	}
+	return isSelectedProviderField(key, preset, true)
+}
+
+func isSelectedProviderField(key string, preset Preset, access bool) bool {
+	switch preset {
+	case PresetGCP:
+		return key == "logging.googleapis.com/trace" ||
+			key == "logging.googleapis.com/trace_sampled" ||
+			access && key == "httpRequest"
+	case PresetAWS:
+		return key == "xray_trace_id"
+	case PresetAzure:
+		return key == "operation_Id" || key == "operation_ParentId"
 	default:
 		return false
 	}
@@ -410,14 +398,7 @@ func requestPath(ctx huma.Context) string {
 	if url.Path == "" {
 		return ""
 	}
-	path := url.EscapedPath()
-	if url.RawPath != "" && path != url.RawPath {
-		return ""
-	}
-	if !strings.HasPrefix(path, "/") || strings.Contains(path, "#") {
-		return ""
-	}
-	return path
+	return url.EscapedPath()
 }
 
 func directPeerIP(remoteAddr string) string {

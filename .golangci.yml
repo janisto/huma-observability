@@ -102,11 +102,11 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/janisto/huma-observability)
+        - prefix(github.com/janisto/huma-observability/v2)
       custom-order: true
 
     gofumpt:
-      module-path: github.com/janisto/huma-observability
+      module-path: github.com/janisto/huma-observability/v2
       extra-rules: true
 
     golines:

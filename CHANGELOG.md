@@ -71,18 +71,25 @@ module path.
 - Contain panics from the access clock, status mapper, enrichment callback, and
   writer without changing handler behavior; keep the first repeated custom
   field so package-controlled JSON contains no duplicate member names.
-- Validate Huma operation paths before emitting canonical `path_template`
-  values; unmatched and router-specific catch-all requests remain outside the
-  operation middleware boundary.
+- Preserve nonempty Huma operation templates and framework-exposed escaped
+  paths, including asterisk-form paths, without package-invented route or
+  percent-encoding validation.
 - Fold every GCP severity into the portable five-level vocabulary, reject
   terminal or unknown status-callback levels, omit unavailable request paths,
   and emit only canonical unzoned IP address literals for direct peers.
 
 ### Fixed
 
-- Prevent direct application Zap fields on package-created loggers from
-  overriding or duplicating reserved request, access, envelope, and provider
-  fields in raw NDJSON without replacing external Zap core admission behavior.
+- Protect only exact record-owned top-level fields in raw NDJSON, while
+  preserving access-only application fields, exact aliases for inactive
+  provider profiles, other non-owned provider-looking keys, application
+  namespaces, and reserved-looking fields nested with `zap.Namespace`.
+- Preserve the selected provider preset through `HTTPRequestContext`, reject a
+  mismatched preset whenever existing request metadata is reused, and call a
+  configured request-ID generator once before using the package fallback.
+- Preserve the default request-ID entropy path on successful reads and use the
+  package fallback only on read failure; align repository metadata with the
+  `/v2` module identity.
 - Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
   0, 3, 6, or 9 digits according to the required precision.
 - Preserve framework-valid route parameter names, including extended and

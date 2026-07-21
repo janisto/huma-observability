@@ -409,10 +409,11 @@ Huma access log fields:
   9110 field-content value is available
 - `httpRequest` for GCP
 
-Huma operation paths already use the portable whole-segment `{name}` form.
-Only valid canonical operation paths are emitted. The selected Huma middleware
-boundary runs for registered operations, so it does not claim unmatched-route
-or router-specific catch-all access records; those remain router-owned.
+`path_template` uses the nonempty matched operation path supplied by Huma.
+Simple Huma paths already use the portable `{name}` form; richer framework
+templates are preserved rather than rejected by a package-invented grammar.
+The selected Huma middleware boundary runs for registered operations, so it
+does not claim unmatched-route access records; those remain router-owned.
 Huma's OpenAPI operation registry also rejects methods outside its supported
 method set before this middleware can run. The package records the framework
 method for supported operations and does not claim arbitrary extension-method
@@ -424,9 +425,9 @@ does not enable them. When path capture is enabled, GCP
 scheme, authority, query, or fragment. GCP `remoteIp` and `userAgent` appear
 only with their corresponding portable opt-ins.
 
-Captured paths and peers are validated rather than repaired: unavailable and
-opaque targets are omitted; absolute-form targets are reduced to their escaped
-path without scheme, authority, query, or fragment. Peer fields contain only
+Captured paths use Go's nonempty escaped URL path exactly as exposed at the
+middleware boundary, including `*`; unavailable paths are omitted. The result
+never includes a scheme, authority, query, or fragment. Peer fields contain only
 canonical unzoned IPv4 or IPv6 address literals. GCP severities always use `DEBUG`,
 `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. A custom status mapper returning a
 terminal or unknown Zap level falls back to the default status mapping.
@@ -437,16 +438,20 @@ Logger keys:
 - GCP: `timestamp`, `severity`, `message`, optional `logger`.
 
 `AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
-access logs. Fields using package-owned or provider-reserved keys are ignored to
-avoid duplicate core keys in the JSON output. If the returned Zap field slice
-repeats a custom key, the first value wins. Inline object marshalers are ignored
-because their inner keys cannot be checked safely before they enter the access
-record namespace.
+access logs. Exact fields owned by the access envelope, correlation metadata,
+or selected provider profile are ignored at the top level to avoid duplicate
+JSON keys. Other provider-looking and application namespace keys remain
+application-owned, including exact aliases belonging only to an inactive
+provider profile. Fields after `zap.Namespace` are nested and cannot collide
+with package-owned top-level fields. If the returned slice repeats a custom
+key, the first value wins. Inline object marshalers are ignored because their
+inner keys cannot be checked before they enter the access-record namespace.
 
 The logger returned by `NewLogger`, including request-scoped derivatives of
-that logger returned by `Logger(ctx)`, drops direct reserved Zap fields before
-encoding while preserving ordinary application fields and Zap's native
-application-error field. Inline marshalers, externally supplied Zap loggers,
+that logger returned by `Logger(ctx)`, protects only exact application-envelope,
+correlation, and selected provider-profile fields at the top level. Access-only
+fields and fields inside `zap.Namespace` remain application-owned. Inline
+marshalers, externally supplied Zap loggers,
 and custom core wrappers placed around a package logger cannot be inspected or
 rewrapped safely without changing core admission, sampling, or hook behavior;
 their fields remain integration preconditions. A raw Zap logger that never
@@ -469,9 +474,10 @@ RFC 9110 field content and Go's exact response-header/UTF-8 JSON boundary,
 including punctuation, internal space or tab, Unicode text, and values longer
 than 128 bytes. Edge whitespace, controls, and invalid UTF-8 bytes are rejected
 before the callback. It is applied only to caller input, never to generated or
-package-fallback IDs. A configured generator is tried exactly
-twice unless its first result passes the baseline. Validator and generator
-panics are contained as rejection/failure and do not bypass the handler.
+package-fallback IDs. A configured generator is called once; an invalid result
+or panic selects the package fallback without repeating application side
+effects. Validator and generator panics are contained and do not bypass the
+handler.
 Multiple raw request-ID or `traceparent` field-lines are
 ambiguous and rejected. Invalid input is replaced or ignored while request
 processing continues.
@@ -632,12 +638,12 @@ engine's workflow and additional flags.
   defines the default `traceparent` and `tracestate` contract.
 - [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
   defines the explicit Level 2 key grammar and random trace-ID flag.
-- [Google Cloud trace and log integration](https://cloud.google.com/trace/docs/trace-log-integration)
+- [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
   documents the bare trace ID as the preferred trace field format.
-- [Google Cloud Trace release notes](https://cloud.google.com/trace/docs/release-notes)
+- [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
   record when the bare trace ID became the preferred form while the full
   project resource name remained supported.
-- [Google Cloud structured logging](https://cloud.google.com/logging/docs/structured-logging)
+- [Google Cloud structured logging](https://docs.cloud.google.com/logging/docs/structured-logging)
   documents `severity`, `message`, `httpRequest`, and special trace fields.
 - [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html#xray-api-traceids)
   document converting a W3C trace ID to `1-8hex-24hex` form.

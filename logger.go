@@ -16,10 +16,13 @@ var noopLogger = zap.NewNop()
 
 type applicationCore struct {
 	zapcore.Core
+	nested bool
+	preset Preset
 }
 
 func (core *applicationCore) With(fields []zap.Field) zapcore.Core {
-	return &applicationCore{Core: core.Core.With(filterApplicationFields(fields))}
+	filtered, nested := filterApplicationFields(fields, core.nested, core.preset)
+	return &applicationCore{Core: core.Core.With(filtered), nested: nested, preset: core.preset}
 }
 
 func (core *applicationCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
@@ -30,30 +33,60 @@ func (core *applicationCore) Check(entry zapcore.Entry, checked *zapcore.Checked
 }
 
 func (core *applicationCore) Write(entry zapcore.Entry, fields []zap.Field) error {
-	return core.Core.Write(entry, filterApplicationFields(fields))
+	filtered, _ := filterApplicationFields(fields, core.nested, core.preset)
+	return core.Core.Write(entry, filtered)
 }
 
-func filterApplicationFields(fields []zap.Field) []zap.Field {
-	hasReserved := false
-	for _, field := range fields {
-		if field.Type != zapcore.InlineMarshalerType && isReservedLogField(field.Key) {
-			hasReserved = true
-			break
-		}
+func filterApplicationFields(fields []zap.Field, nested bool, preset Preset) ([]zap.Field, bool) {
+	if nested {
+		return fields, true
 	}
-	if !hasReserved {
-		return fields
-	}
+
 	filtered := make([]zap.Field, 0, len(fields))
-	for _, field := range fields {
-		if field.Type == zapcore.InlineMarshalerType || !isReservedLogField(field.Key) {
+	for index, field := range fields {
+		if field.Type == zapcore.NamespaceType {
+			if isReservedApplicationLogField(field.Key, preset) {
+				return filtered, false
+			}
+			filtered = append(filtered, fields[index:]...)
+			return filtered, true
+		}
+		if field.Type == zapcore.InlineMarshalerType || !isReservedApplicationLogField(field.Key, preset) {
 			filtered = append(filtered, field)
 		}
 	}
-	return filtered
+	if len(filtered) == len(fields) {
+		return fields, false
+	}
+	return filtered, false
 }
 
-func guardApplicationLogger(logger *zap.Logger) *zap.Logger {
+func isReservedApplicationLogField(key string, preset Preset) bool {
+	switch key {
+	case "timestamp",
+		"logger",
+		"caller",
+		"stacktrace",
+		"message",
+		"request_id",
+		"correlation_id",
+		"trace_id",
+		"parent_id",
+		"trace_flags",
+		"trace_sampled",
+		"trace_id_random":
+		return true
+	}
+	if key == "severity" {
+		return preset == PresetGCP
+	}
+	if key == "level" {
+		return preset != PresetGCP
+	}
+	return isSelectedProviderField(key, preset, false)
+}
+
+func guardApplicationLogger(logger *zap.Logger, preset Preset) *zap.Logger {
 	if logger == nil {
 		logger = noopLogger
 	}
@@ -61,7 +94,7 @@ func guardApplicationLogger(logger *zap.Logger) *zap.Logger {
 		if _, guarded := core.(*applicationCore); guarded {
 			return core
 		}
-		return &applicationCore{Core: core}
+		return &applicationCore{Core: core, preset: preset}
 	}))
 }
 
@@ -257,7 +290,7 @@ func NewLogger(config LoggerConfig) (*zap.Logger, error) {
 	if config.Development {
 		options = append(options, zap.Development())
 	}
-	return guardApplicationLogger(zap.New(core, options...)), nil
+	return guardApplicationLogger(zap.New(core, options...), config.Preset), nil
 }
 
 // Logger returns the request-scoped logger from ctx, or a no-op logger when no

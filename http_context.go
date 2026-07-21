@@ -37,6 +37,7 @@ func HTTPRequestContext(config HTTPRequestContextConfig) func(http.Handler) http
 				}
 				ctx = contextWithRequestMetadata(ctx, metadata)
 			} else {
+				requireMatchingPreset(metadata, cfg.preset)
 				requireMatchingTraceContextLevel(metadata, cfg.requestConfig.TraceContextLevel)
 			}
 
@@ -71,6 +72,7 @@ func normalizeHTTPRequestContextConfig(config HTTPRequestContextConfig) normaliz
 		DisableResponseHeader: config.DisableResponseHeader,
 		NewRequestID:          config.NewRequestID,
 		ValidateRequestID:     config.ValidateRequestID,
+		Preset:                config.Preset,
 	})
 	return normalizedHTTPRequestContextConfig{
 		requestConfig: requestConfig,

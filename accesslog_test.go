@@ -155,11 +155,18 @@ func TestApplicationLoggerDropsReservedFieldsWithoutChangingAccessRecord(t *test
 			zap.String("request_id", "spoofed-request"),
 			zap.String("trace_id", "00000000000000000000000000000001"),
 			zap.String("operation_Id", "spoofed-operation"),
+			zap.String("xray_trace_id", "application-xray"),
+			zap.String("logging.googleapis.com/trace", "application-gcp-trace"),
+			zap.Bool("logging.googleapis.com/trace_sampled", false),
 			zap.String("method", "DELETE"),
 			zap.Int("status", 599),
 			zap.String("message", "spoofed-message"),
 			zap.String("logging.googleapis.com/future", "spoofed-provider"),
+			zap.Any("logging.googleapis.com/labels", map[string]string{"component": "worker"}),
 			zap.Bool("obs.internal", true),
+			zap.Bool("_obs_debug", true),
+			zap.String("remote_ip", "application-peer"),
+			zap.String("logging.googleapis.com/spanId", "application-span"),
 			zap.String("error", "controlled application error"),
 			zap.String("tenant_id", "tenant-1"),
 		)
@@ -171,14 +178,21 @@ func TestApplicationLoggerDropsReservedFieldsWithoutChangingAccessRecord(t *test
 		t.Fatalf("log line count = %d, want 2; output=%s", len(rawLines), buffer.String())
 	}
 	applicationLine := rawLines[0]
-	for _, key := range []string{"request_id", "trace_id", "operation_Id", "message", "tenant_id"} {
+	for _, key := range []string{
+		"request_id", "trace_id", "operation_Id", "xray_trace_id",
+		"logging.googleapis.com/trace", "logging.googleapis.com/trace_sampled", "message", "tenant_id",
+	} {
 		if count := strings.Count(applicationLine, `"`+key+`"`); count != 1 {
 			t.Fatalf("%s key count = %d, want 1; line=%s", key, count, applicationLine)
 		}
 	}
-	for _, key := range []string{"method", "status", "logging.googleapis.com/future", "obs.internal"} {
-		if count := strings.Count(applicationLine, `"`+key+`"`); count != 0 {
-			t.Fatalf("%s key count = %d, want 0; line=%s", key, count, applicationLine)
+	for _, key := range []string{
+		"method", "status", "logging.googleapis.com/future", "logging.googleapis.com/labels",
+		"obs.internal", "_obs_debug",
+		"remote_ip", "logging.googleapis.com/spanId",
+	} {
+		if count := strings.Count(applicationLine, `"`+key+`"`); count != 1 {
+			t.Fatalf("%s key count = %d, want 1; line=%s", key, count, applicationLine)
 		}
 	}
 	application := decodeSingleLogLine(t, applicationLine)
@@ -186,6 +200,21 @@ func TestApplicationLoggerDropsReservedFieldsWithoutChangingAccessRecord(t *test
 	assertAccessField(t, application, "request_id", "canonical-request")
 	assertAccessField(t, application, "trace_id", traceID)
 	assertAccessField(t, application, "operation_Id", traceID)
+	assertAccessField(t, application, "xray_trace_id", "application-xray")
+	assertAccessField(t, application, "logging.googleapis.com/trace", "application-gcp-trace")
+	assertAccessField(t, application, "logging.googleapis.com/trace_sampled", false)
+	assertAccessField(t, application, "method", "DELETE")
+	assertAccessField(t, application, "status", float64(599))
+	assertAccessField(t, application, "logging.googleapis.com/future", "spoofed-provider")
+	applicationLabels, ok := application["logging.googleapis.com/labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("application labels object missing: %#v", application)
+	}
+	assertAccessField(t, applicationLabels, "component", "worker")
+	assertAccessField(t, application, "obs.internal", true)
+	assertAccessField(t, application, "_obs_debug", true)
+	assertAccessField(t, application, "remote_ip", "application-peer")
+	assertAccessField(t, application, "logging.googleapis.com/spanId", "application-span")
 	assertAccessField(t, application, "error", "controlled application error")
 	assertAccessField(t, application, "tenant_id", "tenant-1")
 
@@ -194,6 +223,48 @@ func TestApplicationLoggerDropsReservedFieldsWithoutChangingAccessRecord(t *test
 	assertAccessField(t, access, "method", http.MethodGet)
 	assertAccessField(t, access, "status", float64(http.StatusNoContent))
 	assertAccessField(t, access, "request_id", "canonical-request")
+}
+
+func TestApplicationLoggerPreservesNestedReservedLookingFieldsAcrossWith(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/nested", map[string]string{
+		defaultRequestIDHeader: "canonical-request",
+	})
+
+	RequestContext(RequestContextConfig{Logger: logger})(ctx, func(next huma.Context) {
+		Logger(next.Context()).With(zap.Namespace("job")).Info(
+			"nested application event",
+			zap.String("status", "running"),
+			zap.String("method", "worker"),
+			zap.String("request_id", "nested-request"),
+		)
+		Logger(next.Context()).Info(
+			"protected namespace",
+			zap.Namespace("request_id"),
+			zap.String("forged", "must-not-be-hoisted"),
+		)
+	})
+
+	entries := decodeLogLines(t, buffer.String())
+	if len(entries) != 2 {
+		t.Fatalf("log line count = %d, want 2; entries=%#v", len(entries), entries)
+	}
+	job, ok := entries[0]["job"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested job object missing: %#v", entries[0])
+	}
+	assertAccessField(t, job, "status", "running")
+	assertAccessField(t, job, "method", "worker")
+	assertAccessField(t, job, "request_id", "nested-request")
+	assertAccessField(t, entries[0], "request_id", "canonical-request")
+	assertAccessField(t, entries[1], "request_id", "canonical-request")
+	assertNoAccessField(t, entries[1], "forged")
 }
 
 func TestHumaRejectsExtensionMethodRegistrationBeforeAccessMiddleware(t *testing.T) {
@@ -307,9 +378,9 @@ func TestCanonicalRouteTemplateCurrentHumaForms(t *testing.T) {
 	}{
 		{native: "/health", ok: true},
 		{native: "/items/{item_id}", ok: true},
-		{native: "/items/{item_id?}"},
-		{native: "/files/*"},
+		{native: "/files/*", ok: true},
 		{native: "/items/{item_id}/suffix", ok: true},
+		{native: "/items/{item#fragment}", ok: true},
 	} {
 		t.Run(test.native, func(t *testing.T) {
 			t.Parallel()
@@ -319,24 +390,8 @@ func TestCanonicalRouteTemplateCurrentHumaForms(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{
-		"A", "_", "0item", "item-id", "item.name", "item name", strings.Repeat("a", 65),
-	} {
-		t.Run("valid-name-"+name, func(t *testing.T) {
-			t.Parallel()
-			native := "/items/{" + name + "}"
-			if got, ok := canonicalRouteTemplate(native); !ok || got != native {
-				t.Fatalf("canonicalRouteTemplate(%q) = (%q, %v), want unchanged", native, got, ok)
-			}
-		})
-	}
-	for _, name := range []string{"", "{a", "a}", "a*", "a?", "a#", "a\nforged"} {
-		t.Run("invalid-name-"+name, func(t *testing.T) {
-			t.Parallel()
-			if got, ok := canonicalRouteTemplate("/items/{" + name + "}"); ok || got != "" {
-				t.Fatalf("invalid parameter name %q produced (%q, %v)", name, got, ok)
-			}
-		})
+	if got, ok := canonicalRouteTemplate(""); ok || got != "" {
+		t.Fatalf("empty route template produced (%q, %v)", got, ok)
 	}
 }
 
@@ -485,6 +540,55 @@ func TestAccessLoggerParameterIdentityHasStableCardinality(t *testing.T) {
 	assertAccessField(t, entries[3], "operation_id", "get_long")
 	assertAccessField(t, entries[4], "path_template", "/control/{item}")
 	assertAccessField(t, entries[4], "operation_id", "get\ncontrol")
+}
+
+func TestHumatestPreservesMatchedQuestionAndCompositeLookingTemplates(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	_, api := humatest.New(t)
+	api.UseMiddleware(AccessLogger(AccessLoggerConfig{Logger: logger}))
+	for _, operation := range []huma.Operation{
+		{
+			OperationID: "optional-looking",
+			Method:      http.MethodGet,
+			Path:        "/optional/{item?}",
+		},
+		{
+			OperationID: "composite-looking",
+			Method:      http.MethodGet,
+			Path:        "/reports/report-{year}.csv",
+		},
+	} {
+		huma.Register(api, operation, func(context.Context, *struct{}) (*testOutput, error) {
+			return &testOutput{Body: testBody{OK: true}}, nil
+		})
+	}
+
+	for _, target := range []string{
+		"/optional",
+		"/reports/report-2026.csv",
+	} {
+		if response := api.Get(target); response.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want 404", target, response.Code)
+		}
+	}
+	if response := api.Get("/optional/value"); response.Code != http.StatusOK {
+		t.Fatalf("GET /optional/value status = %d, want 200", response.Code)
+	}
+	if response := api.Get("/reports/report-:year.csv"); response.Code != http.StatusOK {
+		t.Fatalf("GET literal composite spelling status = %d, want 200", response.Code)
+	}
+	entries := decodeLogLines(t, buffer.String())
+	if len(entries) != 2 {
+		t.Fatalf("access log count = %d, want 2; entries=%#v", len(entries), entries)
+	}
+	assertAccessField(t, entries[0], "path_template", "/optional/{item?}")
+	assertAccessField(t, entries[1], "path_template", "/reports/report-{year}.csv")
 }
 
 func TestAccessMetadataPreservesStaticOperationIDsAndValidUserAgentWhitespace(t *testing.T) {
@@ -1108,7 +1212,6 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 	reservedKeys := []string{
 		"timestamp",
 		"level",
-		"severity",
 		"logger",
 		"caller",
 		"stacktrace",
@@ -1120,9 +1223,6 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 		"trace_flags",
 		"trace_sampled",
 		"trace_id_random",
-		"xray_trace_id",
-		"operation_Id",
-		"operation_ParentId",
 		"method",
 		"path",
 		"path_template",
@@ -1131,12 +1231,7 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 		"duration_ms",
 		"terminal_reason",
 		"peer_ip",
-		"remote_ip",
 		"user_agent",
-		"httpRequest",
-		"logging.googleapis.com/trace",
-		"logging.googleapis.com/trace_sampled",
-		"logging.googleapis.com/spanId",
 	}
 	var buffer bytes.Buffer
 	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
@@ -1189,6 +1284,64 @@ func TestAccessLoggerFiltersReservedExtraFields(t *testing.T) {
 	if got := strings.Count(line, `"tenant_id"`); got != 1 {
 		t.Fatalf("tenant_id key count = %d, want 1; line=%s", got, line)
 	}
+}
+
+func TestAccessLoggerExtraFieldsPreserveContextualAndNestedFields(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	ctx, _ := newHumaTestContext(http.MethodGet, "/nested", map[string]string{
+		defaultRequestIDHeader: "req-extra-nested",
+	})
+
+	AccessLogger(AccessLoggerConfig{
+		Logger: logger,
+		ExtraFields: func(huma.Context) []zap.Field {
+			return []zap.Field{
+				zap.String("remote_ip", "application-peer"),
+				zap.String("logging.googleapis.com/spanId", "application-span"),
+				zap.String("logging.googleapis.com/future", "provider-extension"),
+				zap.Any("logging.googleapis.com/labels", map[string]string{"component": "worker"}),
+				zap.String("obs.custom", "visible"),
+				zap.String("_obs_debug", "visible"),
+				zap.Namespace("job"),
+				zap.String("status", "running"),
+				zap.String("method", "worker"),
+				zap.String("request_id", "nested-request"),
+			}
+		},
+	})(ctx, func(next huma.Context) {
+		next.SetStatus(http.StatusOK)
+	})
+
+	line := strings.TrimSpace(buffer.String())
+	if count := strings.Count(line, `"logging.googleapis.com/labels"`); count != 1 {
+		t.Fatalf("logging.googleapis.com/labels key count = %d, want 1; line=%s", count, line)
+	}
+	entry := decodeSingleLogLine(t, line)
+	assertAccessField(t, entry, "request_id", "req-extra-nested")
+	assertAccessField(t, entry, "status", float64(http.StatusOK))
+	assertAccessField(t, entry, "remote_ip", "application-peer")
+	assertAccessField(t, entry, "logging.googleapis.com/spanId", "application-span")
+	assertAccessField(t, entry, "logging.googleapis.com/future", "provider-extension")
+	accessLabels, ok := entry["logging.googleapis.com/labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("access labels object missing: %#v", entry)
+	}
+	assertAccessField(t, accessLabels, "component", "worker")
+	assertAccessField(t, entry, "obs.custom", "visible")
+	assertAccessField(t, entry, "_obs_debug", "visible")
+	job, ok := entry["job"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested job object missing: %#v", entry)
+	}
+	assertAccessField(t, job, "status", "running")
+	assertAccessField(t, job, "method", "worker")
+	assertAccessField(t, job, "request_id", "nested-request")
 }
 
 func TestAccessLoggerProtectsCallerAndRandomTraceFieldsFromExtraFields(t *testing.T) {
@@ -1762,6 +1915,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 		wantLevel  string
 		levelKey   string
 		traceLevel TraceContextLevel
+		spoofKey   string
 	}{
 		{
 			name:    "gcp raw trace id unsampled",
@@ -1780,6 +1934,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			},
 			wantLevel: "INFO",
 			levelKey:  "severity",
+			spoofKey:  "logging.googleapis.com/trace",
 		},
 		{
 			name:    "aws xray id from w3c",
@@ -1799,6 +1954,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			},
 			wantLevel: "INFO",
 			levelKey:  "level",
+			spoofKey:  "xray_trace_id",
 		},
 		{
 			name:    "azure operation fields from w3c",
@@ -1817,6 +1973,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			},
 			wantLevel: "INFO",
 			levelKey:  "level",
+			spoofKey:  "operation_Id",
 		},
 		{
 			name:       "aws xray id with level two random flag",
@@ -1831,6 +1988,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			rejectKeys: []string{"operation_Id", "operation_ParentId"},
 			wantLevel:  "INFO",
 			levelKey:   "level",
+			spoofKey:   "xray_trace_id",
 		},
 		{
 			name:       "azure operation fields with level two random flag",
@@ -1846,6 +2004,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 			rejectKeys: []string{"xray_trace_id"},
 			wantLevel:  "INFO",
 			levelKey:   "level",
+			spoofKey:   "operation_Id",
 		},
 	}
 
@@ -1873,7 +2032,7 @@ func TestAccessLoggerProviderTraceFieldsOnHandlerAndAccessLines(t *testing.T) {
 				AccessLogger(AccessLoggerConfig{
 					Logger: logger, Preset: tt.preset, TraceContextLevel: tt.traceLevel,
 				})(ctx, func(ctx huma.Context) {
-					Logger(ctx.Context()).Info("handler cloud log")
+					Logger(ctx.Context()).Info("handler cloud log", zap.String(tt.spoofKey, "spoofed-provider-trace"))
 				})
 			})
 
@@ -1954,9 +2113,11 @@ func TestAccessLoggerFiltersProviderReservedExtraFields(t *testing.T) {
 
 	const traceparent = "00-4efaaf4d1e8720b39541901950019ee5-00f067aa0ba902b7-01"
 	providerKeys := []string{
+		"level",
+		"severity",
+		"httpRequest",
 		"logging.googleapis.com/trace",
 		"logging.googleapis.com/trace_sampled",
-		"logging.googleapis.com/spanId",
 		"xray_trace_id",
 		"operation_Id",
 		"operation_ParentId",
@@ -1982,6 +2143,9 @@ func TestAccessLoggerFiltersProviderReservedExtraFields(t *testing.T) {
 					Preset: preset,
 					ExtraFields: func(huma.Context) []zap.Field {
 						return []zap.Field{
+							zap.String("level", "bad-level"),
+							zap.String("severity", "bad-severity"),
+							zap.String("httpRequest", "bad-http-request"),
 							zap.String("logging.googleapis.com/trace", "bad-gcp-trace"),
 							zap.Bool("logging.googleapis.com/trace_sampled", false),
 							zap.String("logging.googleapis.com/spanId", "bad-gcp-span"),
@@ -1995,30 +2159,47 @@ func TestAccessLoggerFiltersProviderReservedExtraFields(t *testing.T) {
 			})
 
 			line := strings.TrimSpace(buffer.String())
-			if strings.Contains(line, "bad-") {
-				t.Fatalf("reserved provider field override leaked into access log: %s", line)
-			}
 			for _, key := range providerKeys {
-				if got := strings.Count(line, `"`+key+`"`); got > 1 {
-					t.Fatalf("%s key count = %d, want at most 1; line=%s", key, got, line)
+				if got := strings.Count(line, `"`+key+`"`); got != 1 {
+					t.Fatalf("%s key count = %d, want 1; line=%s", key, got, line)
 				}
 			}
 
 			entry := decodeSingleLogLine(t, line)
 			assertAccessField(t, entry, "tenant_id", "tenant-1")
+			assertAccessField(t, entry, "logging.googleapis.com/spanId", "bad-gcp-span")
+			want := map[string]any{
+				"level":                                "bad-level",
+				"severity":                             "bad-severity",
+				"httpRequest":                          "bad-http-request",
+				"logging.googleapis.com/trace":         "bad-gcp-trace",
+				"logging.googleapis.com/trace_sampled": false,
+				"xray_trace_id":                        "bad-xray-trace",
+				"operation_Id":                         "bad-azure-operation",
+				"operation_ParentId":                   "bad-azure-parent",
+			}
 			switch preset {
 			case PresetGCP:
-				assertAccessField(t, entry, "logging.googleapis.com/trace", "4efaaf4d1e8720b39541901950019ee5")
-				assertAccessField(t, entry, "logging.googleapis.com/trace_sampled", true)
-				assertNoAccessField(t, entry, "logging.googleapis.com/spanId")
+				want["severity"] = "INFO"
+				delete(want, "httpRequest")
+				want["logging.googleapis.com/trace"] = "4efaaf4d1e8720b39541901950019ee5"
+				want["logging.googleapis.com/trace_sampled"] = true
 			case PresetAWS:
-				assertAccessField(t, entry, "xray_trace_id", "1-4efaaf4d-1e8720b39541901950019ee5")
+				want["level"] = "INFO"
+				want["xray_trace_id"] = "1-4efaaf4d-1e8720b39541901950019ee5"
 			case PresetAzure:
-				assertAccessField(t, entry, "operation_Id", "4efaaf4d1e8720b39541901950019ee5")
-				assertAccessField(t, entry, "operation_ParentId", "00f067aa0ba902b7")
+				want["level"] = "INFO"
+				want["operation_Id"] = "4efaaf4d1e8720b39541901950019ee5"
+				want["operation_ParentId"] = "00f067aa0ba902b7"
 			default:
-				for _, key := range providerKeys {
-					assertNoAccessField(t, entry, key)
+				want["level"] = "INFO"
+			}
+			for key, value := range want {
+				assertAccessField(t, entry, key, value)
+			}
+			if preset == PresetGCP {
+				if _, ok := entry["httpRequest"].(map[string]any); !ok {
+					t.Fatalf("GCP httpRequest was displaced by application data: %#v", entry)
 				}
 			}
 		})
@@ -2130,7 +2311,7 @@ func TestDirectPeerIPCanonicalizesValidatedAddresses(t *testing.T) {
 	}
 }
 
-func TestRequestPathRejectsUnavailableAndNonOriginForms(t *testing.T) {
+func TestRequestPathPreservesFrameworkEscapedPathRepresentations(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -2139,13 +2320,14 @@ func TestRequestPathRejectsUnavailableAndNonOriginForms(t *testing.T) {
 		want string
 	}{
 		{name: "origin form", url: "/widgets/a%2Fb?secret=true", want: "/widgets/a%2Fb"},
+		{name: "literal hash path data", url: "/widgets/a#literal", want: "/widgets/a%23literal"},
 		{name: "empty path", url: "https://example.test", want: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, test.url, nil)
-			if test.name == "empty path" {
-				request.URL.Path = ""
+			if test.name == "empty path" && request.URL.Path != "" {
+				t.Fatalf("absolute-form request path = %q, want native empty path", request.URL.Path)
 			}
 			response := httptest.NewRecorder()
 			ctx := humatest.NewContext(
@@ -2179,8 +2361,18 @@ func TestRequestPathRejectsUnavailableAndNonOriginForms(t *testing.T) {
 		request,
 		httptest.NewRecorder(),
 	)
-	if got := requestPath(ctx); got != "" {
-		t.Fatalf("requestPath() repaired malformed raw path as %q", got)
+	if got := requestPath(ctx); got != "/widgets/a/b" {
+		t.Fatalf("requestPath() = %q, want framework EscapedPath fallback", got)
+	}
+
+	request = httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "*", nil)
+	ctx = humatest.NewContext(
+		&huma.Operation{Method: http.MethodOptions, Path: "*"},
+		request,
+		httptest.NewRecorder(),
+	)
+	if got := requestPath(ctx); got != "*" {
+		t.Fatalf("asterisk-form requestPath() = %q, want *", got)
 	}
 }
 

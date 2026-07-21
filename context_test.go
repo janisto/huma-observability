@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"go.uber.org/zap"
 )
@@ -220,10 +221,10 @@ func TestCustomRequestIDValidatorRunsOnlyForRFCFieldContent(t *testing.T) {
 	}
 }
 
-func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
+func TestRequestContextCallsConfiguredGeneratorOnceThenFallsBack(t *testing.T) {
 	t.Parallel()
 
-	t.Run("second generated id is accepted", func(t *testing.T) {
+	t.Run("invalid generated id does not trigger a second callback", func(t *testing.T) {
 		t.Parallel()
 
 		calls := 0
@@ -241,36 +242,13 @@ func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
 			handlerRequestID = RequestID(next.Context())
 		})
 
-		if calls != 2 {
-			t.Fatalf("NewRequestID calls = %d, want 2", calls)
-		}
-		assertRequestIDSurfaces(t, handlerRequestID, "valid-on-retry", recorder)
-	})
-
-	t.Run("two invalid generated ids use safe fallback", func(t *testing.T) {
-		t.Parallel()
-
-		calls := 0
-		ctx, recorder := newHumaTestContext(http.MethodGet, "/test", nil)
-		var handlerRequestID string
-		var handlerCorrelationID string
-		RequestContext(RequestContextConfig{
-			NewRequestID: func() string {
-				calls++
-				return "still invalid"
-			},
-		})(ctx, func(next huma.Context) {
-			handlerRequestID = RequestID(next.Context())
-			handlerCorrelationID = CorrelationID(next.Context())
-		})
-
-		if calls != 2 {
-			t.Fatalf("NewRequestID calls = %d, want 2", calls)
+		if calls != 1 {
+			t.Fatalf("NewRequestID calls = %d, want 1", calls)
 		}
 		assertGeneratedRequestID(t, handlerRequestID)
 		assertRequestIDSurfaces(t, handlerRequestID, handlerRequestID, recorder)
-		if handlerCorrelationID != handlerRequestID {
-			t.Fatalf("CorrelationID = %q, want fallback request ID %q", handlerCorrelationID, handlerRequestID)
+		if handlerRequestID == "valid-on-retry" {
+			t.Fatal("configured generator was called a second time")
 		}
 	})
 
@@ -301,7 +279,7 @@ func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
 		}
 	})
 
-	t.Run("generator panics are retried then safely replaced", func(t *testing.T) {
+	t.Run("generator panic is contained then safely replaced", func(t *testing.T) {
 		t.Parallel()
 
 		calls := 0
@@ -318,8 +296,8 @@ func TestRequestContextRetriesInvalidGeneratedIDsAndFallsBack(t *testing.T) {
 			handlerRequestID = RequestID(next.Context())
 		})
 
-		if calls != 2 {
-			t.Fatalf("NewRequestID calls = %d, want 2", calls)
+		if calls != 1 {
+			t.Fatalf("NewRequestID calls = %d, want 1", calls)
 		}
 		if !handlerCalled {
 			t.Fatal("handler was not called")
@@ -429,6 +407,21 @@ func TestRequestContextDefaultGeneratorProducesUniqueHexIDs(t *testing.T) {
 			t.Fatalf("default generator returned duplicate request ID %q", requestID)
 		}
 		seen[requestID] = struct{}{}
+	}
+}
+
+func TestRandomRequestIDUsesProvidedEntropyAndFallsBackOnReadFailure(t *testing.T) {
+	t.Parallel()
+
+	want := strings.Repeat("ab", 16)
+	if got := randomRequestID(bytes.NewReader(bytes.Repeat([]byte{0xab}, 16))); got != want {
+		t.Fatalf("randomRequestID(success) = %q, want %q", got, want)
+	}
+
+	fallback := randomRequestID(strings.NewReader(""))
+	assertGeneratedRequestID(t, fallback)
+	if fallback == want {
+		t.Fatalf("randomRequestID(read failure) reused successful entropy encoding %q", fallback)
 	}
 }
 
@@ -1063,25 +1056,45 @@ func TestRequestContextMiddlewarePreservesCallerValueCancellationAndDeadline(t *
 
 	t.Run("Huma", func(t *testing.T) {
 		t.Parallel()
+		var buffer bytes.Buffer
+		logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+		if err != nil {
+			t.Fatal(err)
+		}
 		parent, deadline := canceledCallerContext(t)
-		ctx, _ := newHumaTestContextWithParent(parent, http.MethodGet, "/test", nil)
-		RequestContext(RequestContextConfig{})(ctx, func(next huma.Context) {
-			assertCallerContextPreserved(t, next.Context(), deadline)
+		ctx, _ := newHumaTestContextWithParent(parent, http.MethodGet, "/test", map[string]string{
+			defaultRequestIDHeader: "req-preserved-huma",
 		})
+		RequestContext(RequestContextConfig{Logger: logger})(ctx, func(next huma.Context) {
+			assertCallerContextPreserved(t, next.Context(), deadline)
+			Logger(next.Context()).Info("preserved Huma context")
+		})
+		entry := decodeSingleLogLine(t, buffer.String())
+		assertAccessField(t, entry, "request_id", "req-preserved-huma")
 	})
 
 	t.Run("net/http", func(t *testing.T) {
 		t.Parallel()
+		var buffer bytes.Buffer
+		logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+		if err != nil {
+			t.Fatal(err)
+		}
 		parent, deadline := canceledCallerContext(t)
-		handler := HTTPRequestContext(HTTPRequestContextConfig{})(http.HandlerFunc(
+		handler := HTTPRequestContext(HTTPRequestContextConfig{Logger: logger})(http.HandlerFunc(
 			func(_ http.ResponseWriter, request *http.Request) {
 				assertCallerContextPreserved(t, request.Context(), deadline)
+				Logger(request.Context()).Info("preserved HTTP context")
 			},
 		))
+		request := httptest.NewRequestWithContext(parent, http.MethodGet, "/http", nil)
+		request.Header.Set(defaultRequestIDHeader, "req-preserved-http")
 		handler.ServeHTTP(
 			httptest.NewRecorder(),
-			httptest.NewRequestWithContext(parent, http.MethodGet, "/http", nil),
+			request,
 		)
+		entry := decodeSingleLogLine(t, buffer.String())
+		assertAccessField(t, entry, "request_id", "req-preserved-http")
 	})
 }
 
@@ -1399,6 +1412,72 @@ func TestHTTPRequestContextLoggerPresetAddsProviderTraceFields(t *testing.T) {
 	if got := entry["logging.googleapis.com/trace_sampled"]; got != true {
 		t.Fatalf("gcp trace_sampled = %v", got)
 	}
+}
+
+func TestHTTPRequestContextPreservesPresetThroughHumaComposition(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Preset: PresetGCP, Writer: &buffer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	api := humago.New(mux, huma.DefaultConfig("Preset integration", "1.0.0"))
+	api.UseMiddleware(RequestContext(RequestContextConfig{Logger: logger, Preset: PresetGCP}))
+	api.UseMiddleware(AccessLogger(AccessLoggerConfig{Logger: logger, Preset: PresetGCP}))
+	handlerCalled := false
+	huma.Register(api, huma.Operation{
+		OperationID: "preset_integration",
+		Method:      http.MethodGet,
+		Path:        "/preset",
+	}, func(ctx context.Context, _ *struct{}) (*testOutput, error) {
+		handlerCalled = true
+		Logger(ctx).Info("matching preset handler")
+		return &testOutput{Body: testBody{OK: true}}, nil
+	})
+	handler := HTTPRequestContext(HTTPRequestContextConfig{
+		Logger: logger,
+		Preset: PresetGCP,
+	})(mux)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/preset", nil)
+	request.Header.Set(defaultRequestIDHeader, "req-preset-integration")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if !handlerCalled || response.Code != http.StatusOK {
+		t.Fatalf("matching preset composition: handler_called=%v status=%d", handlerCalled, response.Code)
+	}
+	entries := decodeLogLines(t, buffer.String())
+	if len(entries) != 2 {
+		t.Fatalf("log line count = %d, want application and access records: %#v", len(entries), entries)
+	}
+	for _, entry := range entries {
+		assertAccessField(t, entry, "severity", "INFO")
+		assertAccessField(t, entry, "request_id", "req-preset-integration")
+	}
+}
+
+func TestHTTPRequestContextRejectsPresetMismatchWhenReusingMetadata(t *testing.T) {
+	t.Parallel()
+
+	handler := HTTPRequestContext(HTTPRequestContextConfig{Preset: PresetGCP})(
+		HTTPRequestContext(HTTPRequestContextConfig{Preset: PresetAWS})(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("mismatched nested middleware reached handler")
+			}),
+		),
+	)
+	defer func() {
+		if got := recover(); got != "provider preset mismatch between RequestContext and AccessLogger" {
+			t.Fatalf("preset mismatch panic = %v", got)
+		}
+	}()
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil),
+	)
 }
 
 func TestHTTPRequestContextReusesExistingMetadata(t *testing.T) {
