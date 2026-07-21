@@ -131,7 +131,7 @@ body:
     attributes:
       label: Last known working version
       description: If this is a regression, provide the most recent package version or commit where the behavior worked.
-      placeholder: "Example: v1.0.1 or commit abc1234"
+      placeholder: "Example: v2.0.0 or commit abc1234"
 
   - type: textarea
     id: diagnostics
