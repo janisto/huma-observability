@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 func TestHelpersUseRequestScopedLoggerAndMetadata(t *testing.T) {

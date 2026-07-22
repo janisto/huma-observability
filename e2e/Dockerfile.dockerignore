@@ -1,0 +1,6 @@
+.git
+.github
+plans
+coverage.out
+*.test
+e2e/server

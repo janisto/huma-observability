@@ -1,4 +1,4 @@
-module github.com/janisto/huma-observability
+module github.com/janisto/huma-observability/v2
 
 go 1.25.0
 

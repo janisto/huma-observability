@@ -1,10 +1,10 @@
 # huma-observability
 
 [![Latest release](https://img.shields.io/github/v/release/janisto/huma-observability)](https://github.com/janisto/huma-observability/releases/latest)
-[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability)
+[![Go Reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/janisto/huma-observability/v2)
 [![Go version](https://img.shields.io/github/go-mod/go-version/janisto/huma-observability)](https://github.com/janisto/huma-observability/blob/main/go.mod)
 [![CI](https://img.shields.io/github/actions/workflow/status/janisto/huma-observability/ci.yml?branch=main&label=CI)](https://github.com/janisto/huma-observability/actions/workflows/ci.yml)
-[![Socket Badge](https://badge.socket.dev/go/package/github.com/janisto/huma-observability)](https://socket.dev/go/package/github.com/janisto/huma-observability)
+[![Socket Badge](https://badge.socket.dev/go/package/github.com/janisto/huma-observability/v2)](https://socket.dev/go/package/github.com/janisto/huma-observability/v2)
 
 `huma-observability` provides request correlation, request-scoped Zap loggers,
 and structured Zap access logging middleware for
@@ -36,16 +36,39 @@ coupling application code to a cloud logging SDK. The package focuses on
 structured logging and request correlation: it does not create spans, configure
 OpenTelemetry, or ship logs to a backend.
 
+## Why newline-delimited JSON
+
+`NewLogger` emits newline-delimited JSON (NDJSON, also called JSON Lines): each
+application or access event is one compact, self-contained JSON object followed
+by one LF (`\n`). The output is a stream of objects, never a JSON array.
+
+NDJSON is deliberate for production logging:
+
+- Agents such as Vector, Fluent Bit, and Datadog can parse entries as a stream
+  with bounded memory instead of waiting for a closing array bracket.
+- Append-only output needs no array brackets, commas, whole-file rewrites, or
+  trailing-comma coordination. Each logger call submits one complete encoded
+  line; the destination and record size determine OS-level write atomicity.
+- A crash or interrupted final write can damage the incomplete last line, while
+  previously completed lines remain independently parseable.
+- Analytics systems can split large inputs on newline boundaries and process
+  independent records in parallel.
+- Standard tools work directly on the stream, for example
+  `head -n 20 app.log | jq -r '.message'`.
+
+Standard JSON arrays are suited to complete documents; NDJSON retains JSON's
+structured fields while providing framing designed for continuous log streams.
+
 ## Package scope
 
-The module path is `github.com/janisto/huma-observability`; the declared Go
+The module path is `github.com/janisto/huma-observability/v2`; the declared Go
 package name is `obs`.
 
 This is not official Huma framework middleware. It is a small, opinionated
 package for services that want the same production logging contract without
 copying request middleware into every application.
 
-## When To Use It
+## When to use it
 
 Use this package when your Huma v2 service needs:
 
@@ -56,37 +79,40 @@ Use this package when your Huma v2 service needs:
 - Router-wide request metadata for health checks, readiness probes, redirects,
   static handlers, 404/405 handlers, and recovery middleware.
 - W3C `traceparent` parsing for trace-level log correlation.
-- Cloud-oriented log fields for Google Cloud Logging, AWS CloudWatch/X-Ray
-  query paths, or Azure Monitor/Application Insights ingestion.
+- Cloud-oriented log fields for Google Cloud Logging and provider-shaped AWS
+  X-Ray or Azure Application Insights correlation. The AWS and Azure presets do
+  not configure collection or submit telemetry.
 
 It also does not export metrics, create AWS X-Ray segments, or emit generic
 `net/http` access logs.
 
-## Requirements
+<a id="requirements"></a>
 
-- Go 1.25 or newer.
+## Requirements and installation
+
+- Go 1.25 or newer; deploy with the latest available patch release.
 - Huma v2.30.0 or newer within the Huma v2 line.
 - Zap.
 
-The v1 release line follows Semantic Versioning. Exported APIs, structured log
-fields, defaults, and supported runtime versions are compatibility contracts.
-Breaking changes require a new major version and will include migration
-guidance.
-
-## Install
+The v1 API and log contract remain available at the unsuffixed module path.
+This checkout targets v2 because its privacy defaults and structured output are
+intentionally incompatible with v1. See the changelog migration section before
+upgrading.
+Version 2 provides no v1 field aliases, option shims, or unsuffixed import
+fallback; applications must migrate to the documented v2 API and module path.
 
 ```sh
-go get github.com/janisto/huma-observability
+go get github.com/janisto/huma-observability/v2
 ```
 
 Import the module path normally. The package name is `obs`, so application code
 uses the `obs` identifier:
 
 ```go
-import "github.com/janisto/huma-observability"
+import "github.com/janisto/huma-observability/v2"
 ```
 
-## Quick Start
+## Complete setup
 
 When this documentation shows one configuration, it uses GCP. Complete
 runnable GCP, provider-neutral, AWS, and Azure applications are available in
@@ -98,7 +124,7 @@ package main
 import (
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 func setup(api huma.API) error {
@@ -110,8 +136,9 @@ func setup(api huma.API) error {
 	}
 
 	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
-		Logger: logger,
-		Preset: obs.PresetGCP,
+		Logger:            logger,
+		Preset:            obs.PresetGCP,
+		TraceContextLevel: obs.TraceContextLevel1,
 	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 		Logger: logger,
@@ -127,7 +154,7 @@ Middleware order is part of the contract: install `RequestContext` before
 request-scoped logger; `AccessLogger` writes the Huma operation-aware access
 log.
 
-## HTTP Request Context
+## HTTP request context
 
 For services with both Huma and non-Huma routes, install `HTTPRequestContext` at
 the outer router boundary:
@@ -150,7 +177,7 @@ request keeps one request ID across both layers.
 router-owned. Huma routes should use `AccessLogger` for operation-aware access
 logs with `path_template` and `operation_id`.
 
-## Handler Logging
+## Handler logging
 
 Use `obs.Logger(ctx)` anywhere you have the request `context.Context`.
 
@@ -188,16 +215,35 @@ request-context middleware may not have `request_id`; that means the request did
 not cross the package boundary yet, the middleware order is wrong, or the log is
 intentionally outside an HTTP request.
 
-## Trace Correlation
+## Trace correlation
 
 W3C `traceparent` is the only trace context input parsed by this package. When
 the header is valid, the W3C trace ID becomes the request `correlation_id` and
 provider-specific trace field source. When the header is missing or invalid,
-`correlation_id` falls back to `request_id`.
+`correlation_id` falls back to `request_id`. Level 1 is the default. Select
+the pinned Level 2 mode explicitly and use the same immutable level for request
+context and access logging:
 
-Multiple `tracestate` header fields are combined in wire order as required by
-W3C Trace Context. The combined value is retained only when it is at most 512
-bytes.
+```go
+const traceLevel = obs.TraceContextLevel2
+api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
+	Logger: logger, Preset: obs.PresetGCP, TraceContextLevel: traceLevel,
+}))
+api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+	Logger: logger, Preset: obs.PresetGCP, TraceContextLevel: traceLevel,
+}))
+```
+
+`ResolveTraceContextLevel(0)` exposes the effective default. Unsupported
+levels fail during middleware construction. Exactly one raw `traceparent`
+field-line is eligible. Version `00` uses exact framing; future-version suffix
+data remains opaque native HTTP field content without a package-invented length
+ceiling. Multiple `tracestate` fields are combined in wire
+order and validated with the selected level's complete key/value grammar,
+unique keys, and at most 32 members. The package can propagate at least 512
+characters and admits a valid 513-character value; 512 is not a package
+rejection ceiling. Invalid `tracestate` is discarded without discarding a
+valid `traceparent`.
 
 This means every log line gets a stable grouping key:
 
@@ -210,6 +256,7 @@ The package also emits common trace fields when a valid trace exists:
 - `parent_id`
 - `trace_flags`
 - `trace_sampled`
+- `trace_id_random` only for version `00` in explicit Level 2 mode
 
 Provider-specific propagation headers such as `X-Cloud-Trace-Context`,
 `X-Amzn-Trace-Id`, and Azure's legacy `Request-Id` header are intentionally not
@@ -222,10 +269,12 @@ and `otelhttp.NewTransport` instruments HTTP clients and outbound propagation.
 This package does not configure OpenTelemetry SDKs, exporters, samplers, or
 global tracer providers.
 
-## Cloud Presets
+## Cloud presets
 
 Use the same preset for `NewLogger`, `RequestContext`, `AccessLogger`, and
 `HTTPRequestContext` when those pieces are used together.
+A preset mismatch is rejected at the first request-composition boundary,
+regardless of middleware order.
 
 ### Google Cloud
 
@@ -258,6 +307,9 @@ The middleware does not emit `logging.googleapis.com/spanId` from a W3C
 `parent-id`. A log span ID must come from a real current span; the incoming
 parent ID is not the same semantic value.
 
+The installed package owns one GCP field mapping. Select it with `PresetGCP`
+for both logger and middleware configuration.
+
 ### AWS
 
 The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
@@ -272,6 +324,9 @@ The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
 The middleware does not create AWS X-Ray segments and does not emit `span_id`
 from an incoming W3C parent ID.
 
+Select the AWS field mapping with `PresetAWS` for both logger and middleware
+configuration.
+
 ### Azure
 
 The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
@@ -284,7 +339,10 @@ The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
 - `operation_Id`, mapped from the W3C trace ID.
 - `operation_ParentId`, mapped from the W3C parent ID.
 
-## Field Contract
+Select the Azure field mapping with `PresetAzure` for both logger and
+middleware configuration.
+
+## Structured log contract
 
 Package-owned fields use `snake_case`. Provider-required fields keep the names
 expected by the target platform.
@@ -299,6 +357,7 @@ Request metadata fields:
 | `parent_id` | The W3C parent ID from `traceparent`. |
 | `trace_flags` | The W3C trace flags value. |
 | `trace_sampled` | Boolean value derived from the sampled flag. |
+| `trace_id_random` | Level 2 boolean derived from bit one for version `00`; absent in Level 1 and unknown higher versions. |
 
 Provider-specific fields:
 
@@ -311,14 +370,39 @@ Provider-specific fields:
 Huma access log fields:
 
 - `method`
-- `path`
+- `path` when `CapturePath` is enabled
 - `path_template`
 - `operation_id`
-- `status`
+- `status`, only when Huma has established it before this middleware returns
 - `duration_ms`
-- `remote_ip`
-- `user_agent`
+- `terminal_reason`, set to `panic` for an escaping panic
+- `peer_ip` when `CapturePeerIP` is enabled; this is the direct transport peer
+- `user_agent` when `CaptureUserAgent` is enabled and exactly one UTF-8 RFC
+  9110 field-content value is available
 - `httpRequest` for GCP
+
+`path_template` uses the nonempty matched operation path supplied by Huma.
+Simple Huma paths already use the portable `{name}` form; richer framework
+templates are preserved rather than rejected by a package-invented grammar.
+The selected Huma middleware boundary runs for registered operations, so it
+does not claim unmatched-route access records; those remain router-owned.
+Huma's OpenAPI operation registry also rejects methods outside its supported
+method set before this middleware can run. The package records the framework
+method for supported operations and does not claim arbitrary extension-method
+case preservation.
+
+The three capture options are independent and default to false. Selecting GCP
+does not enable them. When path capture is enabled, GCP
+`httpRequest.requestUrl` is exactly the sanitized path: it never contains a
+scheme, authority, query, or fragment. GCP `remoteIp` and `userAgent` appear
+only with their corresponding portable opt-ins.
+
+Captured paths use Go's nonempty escaped URL path exactly as exposed at the
+middleware boundary, including `*`; unavailable paths are omitted. The result
+never includes a scheme, authority, query, or fragment. Peer fields contain only
+canonical unzoned IPv4 or IPv6 address literals. GCP severities always use `DEBUG`,
+`INFO`, `WARNING`, `ERROR`, or `CRITICAL`. A custom status mapper returning a
+terminal or unknown Zap level falls back to the default status mapping.
 
 Logger keys:
 
@@ -326,8 +410,25 @@ Logger keys:
 - GCP: `timestamp`, `severity`, `message`, optional `logger`.
 
 `AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
-access logs. Fields using package-owned or provider-reserved keys are ignored to
-avoid duplicate core keys in the JSON output.
+access logs. Exact fields owned by the access envelope, correlation metadata,
+or selected provider preset are ignored at the top level to avoid duplicate
+JSON keys. Other provider-looking and application namespace keys remain
+application-owned, including exact aliases belonging only to an inactive
+provider preset. Fields after `zap.Namespace` are nested and cannot collide
+with package-owned top-level fields. If the returned slice repeats a custom
+key, the first value wins. Inline object marshalers returned by `ExtraFields`
+are ignored because their inner keys cannot be checked before they enter the
+access-record namespace.
+
+The logger returned by `NewLogger`, including request-scoped derivatives of
+that logger returned by `Logger(ctx)`, protects only exact application-envelope,
+correlation, and selected provider-preset fields at the top level. Access-only
+fields and fields inside `zap.Namespace` remain application-owned. Inline
+marshalers, externally supplied Zap loggers,
+and custom core wrappers placed around a package logger cannot be inspected or
+rewrapped safely without changing core admission, sampling, or hook behavior;
+their fields remain integration preconditions. A raw Zap logger that never
+passes through this package is outside the contract.
 
 ## Request IDs
 
@@ -336,11 +437,23 @@ Default `RequestContext` and `HTTPRequestContext` behavior:
 - Request ID header: `X-Request-Id`.
 - Trace header: `traceparent`.
 - Tracestate header: `tracestate`.
+- Trace Context level: W3C Level 1.
 - Response request ID header: same as the request ID header.
 - Generated request IDs: 16 random bytes encoded as lowercase hex.
 
-Invalid incoming request IDs are ignored and replaced. Invalid `traceparent`
-values are ignored for correlation while request processing continues.
+Incoming request IDs use 1–128 ASCII letters, digits, `-`, `.`, `_`, and
+`~` by default. A custom validator may admit a broader nonempty value within
+RFC 9110 field content and Go's exact response-header/UTF-8 JSON boundary,
+including punctuation, internal space or tab, Unicode text, and values longer
+than 128 bytes. Edge whitespace, controls, and invalid UTF-8 bytes are rejected
+before the callback. It is applied only to caller input, never to generated or
+package-fallback IDs. A configured generator is called once; an invalid result
+or panic selects the package fallback without repeating application side
+effects. Validator and generator panics are contained and do not bypass the
+handler.
+Multiple raw request-ID or `traceparent` field-lines are
+ambiguous and rejected. Invalid input is replaced or ignored while request
+processing continues.
 
 `CorrelationID(ctx)` returns the same value written to `correlation_id`: the
 W3C trace ID when a valid `traceparent` exists, otherwise the request ID.
@@ -352,7 +465,7 @@ Use `RequestContextConfig` for Huma routes and `HTTPRequestContextConfig` for
 router-wide HTTP middleware when you need custom request ID or trace header
 names.
 
-## Logger Configuration
+## Logger configuration
 
 `NewLogger` creates a JSON Zap logger. By default it writes application logs to
 stdout and Zap internal errors to stderr.
@@ -366,13 +479,30 @@ Useful options:
 - `AddCaller`: includes Zap caller fields.
 - `Development`: enables Zap development behavior.
 
-## Panic Behavior
+`AccessLoggerConfig` separately provides `TraceContextLevel`, `CapturePath`,
+`CapturePeerIP`, `CaptureUserAgent`, the injectable monotonic `Now` clock,
+status-level mapping, and collision-filtered extra fields.
 
-`AccessLogger` logs a `500` access log when downstream Huma middleware or
-handlers panic, then re-panics. It does not recover the request or hide the
-panic from upstream recovery middleware.
+Operation defaults are route metadata, not evidence that a response status was
+established. Access records therefore omit `status` when `ctx.Status()` is
+still zero instead of guessing the operation default or 200. In that normal
+status-less case the level is info and the status callback is not invoked.
+Handler errors converted by Huma into completed 4xx/5xx responses remain normal
+responses and omit `terminal_reason`.
 
-## Optional Local Wrapper
+## Panic behavior
+
+`AccessLogger` logs an error access record with terminal reason `panic` when
+downstream Huma middleware or handlers panic, then re-panics. Status is retained
+only if Huma had already established one; no 500 is invented. The original
+panic remains the propagated value even if access-log enrichment or writing
+also panics. On normal handler completion, panicking clock, status-mapper,
+enrichment, and writer paths are contained; safe defaults are used when
+possible, handler behavior is unchanged, and failed writes are not retried. The
+package does not recover the request or hide a downstream panic from upstream
+recovery middleware.
+
+## Optional local wrapper
 
 Applications that want shorter local logging helpers can add them in
 application code. A complete copyable example is available at
@@ -387,7 +517,7 @@ applog.Error(ctx, "github request failed", err, zap.Int("status", status))
 The package itself stays Zap-native and does not add application-specific
 `LogWarn` or `LogError` wrappers.
 
-## Validation
+## Development
 
 Development uses [just](https://github.com/casey/just). On macOS, install the
 workflow linters:
@@ -404,33 +534,12 @@ just qa
 just vuln
 ```
 
-`just qa` runs formatting, lint, build, tests, race tests,
+`just qa` includes formatting, lint, build, tests, race tests,
 [actionlint](https://github.com/rhysd/actionlint), and
 [zizmor](https://docs.zizmor.sh/). `just vuln` runs the Go vulnerability scanner
-separately.
+separately. Maintainers should follow the public [release guide](RELEASE.md).
 
-## References
-
-- Google Cloud trace/log linking documents raw `TRACE_ID` as the preferred log
-  trace format: https://docs.cloud.google.com/trace/docs/trace-log-integration
-- Google Cloud changed raw `TRACE_ID` to the preferred `LogEntry.trace` format
-  in January 2026: https://docs.cloud.google.com/trace/docs/release-notes
-- Google Cloud structured logging documents special JSON fields such as
-  `severity`, `httpRequest`, `logging.googleapis.com/trace`, and
-  `logging.googleapis.com/trace_sampled`:
-  https://docs.cloud.google.com/logging/docs/structured-logging
-- AWS X-Ray documents W3C trace IDs formatted as X-Ray trace IDs:
-  https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html
-- Azure Application Insights documents telemetry correlation fields including
-  `operation_Id` and `operation_ParentId`:
-  https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete
-- Azure Application Insights documents W3C Trace Context mapping to
-  `Operation_Id` and `Operation_ParentId`:
-  https://learn.microsoft.com/en-us/azure/azure-monitor/app/javascript-sdk-configuration
-- OpenTelemetry `otelhttp` provides Go HTTP server and client instrumentation:
-  https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
-
-## Mutation Testing
+## Mutation testing
 
 Install [Gremlins](https://github.com/go-gremlins/gremlins) with Homebrew on
 macOS:
@@ -452,7 +561,7 @@ gaps; equivalent transformations do not need artificial assertions. Mutation
 testing intentionally runs outside `just qa` and may take several minutes. The
 configured per-mutant safety timeout does not limit the total campaign time.
 
-## Fuzz Testing
+## Fuzz testing
 
 This repository uses Go's native fuzzing engine for `FuzzParseTraceparent`.
 Run the default ten-second session with:
@@ -481,3 +590,47 @@ fix when it represents behavior the parser must preserve.
 
 See the [Go fuzzing documentation](https://go.dev/doc/security/fuzz/) for the
 engine's workflow and additional flags.
+
+## Consumer image
+
+Run `just e2e-image observability-e2e-local:manual` to build a
+production-shaped consumer image from the exact checkout. The recipe prefers
+Podman and falls back to Docker.
+
+Building the image verifies packaging and integration only. It does not run the
+image, validate emitted logs, compare implementations, or approve a release.
+Optional independent tooling may exercise the package's documented public
+contract. Any audit result is informational and is never a publication
+requirement.
+
+## References
+
+- [Huma middleware](https://huma.rocks/features/middleware/) documents the
+  router-agnostic middleware chain and request-context values.
+- [Huma v2 API reference](https://pkg.go.dev/github.com/danielgtaylor/huma/v2)
+  defines `API`, `Context`, `Operation`, middleware order, and response access.
+- [`net/http`](https://pkg.go.dev/net/http) defines Go request contexts,
+  handlers, response writers, and server behavior.
+- [Zap](https://pkg.go.dev/go.uber.org/zap) and
+  [`zapcore`](https://pkg.go.dev/go.uber.org/zap/zapcore) define structured
+  fields, level checks, cores, writer synchronization, and concurrency safety.
+- [W3C Trace Context Level 1 Recommendation](https://www.w3.org/TR/2021/REC-trace-context-1-20211123/)
+  defines the default `traceparent` and `tracestate` contract.
+- [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
+  defines the explicit Level 2 key grammar and random trace-ID flag.
+- [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
+  documents the bare trace ID as the preferred trace field format.
+- [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
+  record when the bare trace ID became the preferred form while the full
+  project resource name remained supported.
+- [Google Cloud structured logging](https://docs.cloud.google.com/logging/docs/structured-logging)
+  documents `severity`, `message`, `httpRequest`, and special trace fields.
+- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html#xray-api-traceids)
+  document converting a W3C trace ID to `1-8hex-24hex` form.
+- [Azure Application Insights data model](https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete)
+  defines `operation_Id` as the root-operation identifier and
+  `operation_ParentId` as the immediate-parent identifier.
+
+## License
+
+[MIT](LICENSE)

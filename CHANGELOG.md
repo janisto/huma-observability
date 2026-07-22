@@ -7,6 +7,104 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+The changes in this section target `v2.0.0` under module path
+`github.com/janisto/huma-observability/v2`. They must not be tagged on the v1
+module path.
+
+### Migration from v1
+
+- Change imports and installation commands to
+  `github.com/janisto/huma-observability/v2`.
+- Enable `CapturePath`, `CapturePeerIP`, and `CaptureUserAgent` explicitly where
+  those privacy-sensitive fields are still required.
+- Rename consumers of `remote_ip` to `peer_ip`; the new field uses the direct
+  socket peer and ignores proxy-derived addresses.
+- Update status and error queries to use authoritative committed status,
+  the standardized `panic` terminal reason, and unconditional `ERROR` severity
+  for abnormal completion.
+- Custom request-ID validators apply only to caller input and may broaden it
+  within Go's native HTTP field-value boundary; generated IDs retain the
+  package baseline grammar.
+- Remove v1 compatibility aliases and shims; migrate imports and configuration
+  directly to the documented v2 surface.
+
+### Added
+
+- Added independent `CapturePath`, `CapturePeerIP`, and `CaptureUserAgent`
+  access-log opt-ins.
+- Added immutable W3C Trace Context Level 1/Level 2 selection, effective-level
+  resolution, complete selected-level `tracestate` validation, and Level 2
+  `trace_id_random` projection.
+- Added a conditional consumer-image build as a packaging and integration
+  diagnostic, with Podman-first local builds and Docker fallback. Optional
+  independent audits are informational and never a publication requirement.
+
+### Changed
+
+- Applied the RFC 9110 field-content and valid UTF-8 boundary before custom
+  request-ID validation.
+- Skipped optional access enrichment after Zap rejected the effective level.
+- Defined LF-terminated NDJSON as the logging boundary.
+- Omitted invalid UTF-8 User-Agent field values before Zap encoding could
+  replace their bytes; preserved framework-accepted Unicode and internal
+  whitespace.
+- Changed access logging to omit raw path, direct peer IP, and
+  user agent by default. Applications that need the previous fields must enable
+  the matching capture options.
+- Renamed the opt-in portable direct-peer field from `remote_ip`
+  to `peer_ip` and narrowed GCP `httpRequest.requestUrl` to the sanitized
+  query-free path.
+- Rejected duplicate raw request-ID and `traceparent` field-lines;
+  custom request-ID validators can broaden caller input within Go's native HTTP
+  field-value boundary while generated IDs remain strict.
+- Stopped inferring operation-default, 200, and panic 500 statuses
+  when Huma has not established a status. Escaping panics now use
+  `terminal_reason: "panic"`, force `ERROR`, and retain the original panic
+  even if access-log enrichment also panics.
+- Contained panics from the access clock, status mapper, enrichment callback,
+  and writer without changing handler behavior.
+- Kept the first repeated custom field so package-controlled JSON contains no
+  duplicate member names.
+- Preserved nonempty Huma operation templates and framework-exposed escaped
+  paths, including asterisk-form paths, without package-invented route or
+  percent-encoding validation.
+- Folded every GCP severity into the portable five-level vocabulary, rejected
+  terminal or unknown status-callback levels, omitted unavailable request
+  paths, and emitted only canonical unzoned IP address literals for direct
+  peers.
+
+### Removed
+
+- Removed v1 compatibility aliases and configuration shims from the v2 API.
+
+### Fixed
+
+- Protected only exact record-owned top-level fields in raw NDJSON, while
+  preserving access-only application fields, exact aliases for inactive
+  provider presets, other non-owned provider-looking keys, application
+  namespaces, and reserved-looking fields nested with `zap.Namespace`.
+- Preserved the selected provider preset through `HTTPRequestContext`, rejected
+  a mismatched preset whenever existing request metadata is reused, and called
+  a configured request-ID generator once before using the package fallback.
+- Preserved the default request-ID entropy path on successful reads and used
+  the package fallback only on read failure.
+- Emitted GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
+  0, 3, 6, or 9 digits according to the required precision.
+- Preserved framework-valid route parameter names, including extended and
+  longer names, HTTP-safe opaque future `traceparent` suffixes without an
+  invented length cap, valid `tracestate` beyond 512 characters, HTAB
+  User-Agent values, custom-admitted request IDs, and nonempty static operation
+  IDs. Rejected provider-preset or trace-level disagreement regardless of
+  middleware order, rejected unknown presets consistently, reserved Zap
+  `stacktrace`, and protected Zap-owned caller and Level 2 trace fields.
+- Admitted a comma in one request-ID field-line when the configured
+  application validator accepts it; real duplicate field-lines remain
+  rejected.
+- Preserved sampling while omitting the Level 2 random flag for unknown future
+  `traceparent` versions.
+- Rejected `zap.Inline` values from access-log `ExtraFields` so nested
+  marshalers cannot bypass reserved-key collision protection.
+
 ## [1.0.1] - 2026-07-17
 
 ### Added

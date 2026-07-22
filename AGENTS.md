@@ -83,17 +83,32 @@ into human onboarding documentation.
   version tags.
 - `just qa` must run `actionlint` and `zizmor --offline .` in addition to the
   repository's language checks.
+- Do not add standalone repository scripts, including under `.github`. Enforce
+  repository policy through the existing native test suite and tooling.
 - Keep `.github/zizmor.yml` aligned with the exact-tag policy and the
   one-day Dependabot cooldown.
 
 ## Releases
 
-- Prepare releases through a pull request titled `chore: prepare vX.Y.Z`.
+- Prepare releases from a same-repository source branch named
+  `release/prepare-vX.Y.Z` through a pull request titled
+  `chore: prepare vX.Y.Z` that targets `main`.
+- Use the `release/` namespace only for release preparation branches.
+- The conditional `Consumer image build` job on a release preparation pull
+  request is a build-only packaging and integration diagnostic. It does not run
+  the image, validate emitted logs, or approve a release.
+- For local image-build diagnosis, run
+  `just e2e-image observability-e2e-local:manual`. The Justfile prefers Podman
+  and falls back to Docker.
+- Keep `e2e/README.md` self-contained as the public consumer-image interface.
+  Independent audits are optional and informational; they never approve or
+  block publication.
 - Update `CHANGELOG.md` and public documentation together. Go module versions
   come from tags; do not add a separate version constant.
 - Run `just qa`, `just vuln`, and `git diff --check` before committing a release.
-- Merge a green pull request to `main`, then release the exact reviewed commit
-  with tag `vX.Y.Z`.
+- Merge a green pull request to `main`, then manually tag the exact reviewed
+  commit with `vX.Y.Z`. Creating that tag is the maintainer's release
+  authorization.
 - When drafting a stable GitHub Release, use **Generate release notes** and mark
   it as **Latest**. Edit the notes for accuracy and alignment with
   `CHANGELOG.md` before publishing.

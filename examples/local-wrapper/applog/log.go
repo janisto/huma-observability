@@ -6,7 +6,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 // Log writes msg at level using the request-scoped logger.

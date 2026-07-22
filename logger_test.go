@@ -76,6 +76,75 @@ func TestNewLoggerWritesPresetJSON(t *testing.T) {
 	}
 }
 
+func TestNewLoggerWritesLFTerminatedNDJSONRecords(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	logger, err := NewLogger(LoggerConfig{Writer: &buffer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.Info("first ✓\nlogical message")
+	logger.Error("second message")
+
+	output := buffer.String()
+	if !strings.HasSuffix(output, "\n") || strings.Contains(output, "\r") {
+		t.Fatalf("output is not LF-terminated NDJSON: %q", output)
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("physical line count = %d, want 2; output=%q", len(lines), output)
+	}
+	wantMessages := []string{"first ✓\nlogical message", "second message"}
+	for index, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line %d is not one JSON object: %v; line=%q", index, err, line)
+		}
+		if got := record["message"]; got != wantMessages[index] {
+			t.Fatalf("line %d message = %#v, want %q", index, got, wantMessages[index])
+		}
+	}
+}
+
+func TestLoggerWithMetadataPreservesExternalCoreSampling(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.TimeKey = ""
+	core := zapcore.NewSamplerWithOptions(
+		zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderConfig),
+			zapcore.AddSync(&output),
+			zapcore.DebugLevel,
+		),
+		time.Hour,
+		1,
+		0,
+	)
+	logger := loggerWithMetadata(
+		zap.New(core),
+		&requestMetadata{RequestID: "req-external-core"},
+		PresetDefault,
+	)
+
+	logger.Info("sampled")
+	logger.Info("sampled")
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("external sampler wrote %d records, want 1: %q", len(lines), output.String())
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("decode sampled record: %v", err)
+	}
+	if got := record["request_id"]; got != "req-external-core" {
+		t.Fatalf("request_id = %#v, want req-external-core", got)
+	}
+}
+
 func TestNewLoggerGCPLevelMapping(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +158,8 @@ func TestNewLoggerGCPLevelMapping(t *testing.T) {
 		{name: "warn", level: zapcore.WarnLevel, want: "WARNING"},
 		{name: "error", level: zapcore.ErrorLevel, want: "ERROR"},
 		{name: "dpanic", level: zapcore.DPanicLevel, want: "CRITICAL"},
-		{name: "unknown level", level: zapcore.Level(99), want: "LEVEL(99)"},
+		{name: "below debug", level: zapcore.Level(-99), want: "DEBUG"},
+		{name: "unknown high level", level: zapcore.Level(99), want: "CRITICAL"},
 	}
 
 	for _, tt := range tests {
@@ -100,7 +170,7 @@ func TestNewLoggerGCPLevelMapping(t *testing.T) {
 			logger, err := NewLogger(LoggerConfig{
 				Preset: PresetGCP,
 				Writer: &buffer,
-				Level:  zapcore.DebugLevel,
+				Level:  zapcore.Level(-99),
 			})
 			if err != nil {
 				t.Fatalf("NewLogger returned error: %v", err)
@@ -126,8 +196,14 @@ func TestGCPLevelEncoderMapsTerminalLevels(t *testing.T) {
 		level zapcore.Level
 		want  string
 	}{
-		{name: "panic", level: zapcore.PanicLevel, want: "ALERT"},
-		{name: "fatal", level: zapcore.FatalLevel, want: "EMERGENCY"},
+		{name: "panic", level: zapcore.PanicLevel, want: "CRITICAL"},
+		{name: "fatal", level: zapcore.FatalLevel, want: "CRITICAL"},
+		{name: "below debug", level: zapcore.Level(-2), want: "DEBUG"},
+		{name: "debug boundary", level: zapcore.DebugLevel, want: "DEBUG"},
+		{name: "info boundary", level: zapcore.InfoLevel, want: "INFO"},
+		{name: "warn boundary", level: zapcore.WarnLevel, want: "WARNING"},
+		{name: "error boundary", level: zapcore.ErrorLevel, want: "ERROR"},
+		{name: "critical boundary", level: zapcore.DPanicLevel, want: "CRITICAL"},
 	}
 
 	for _, tt := range tests {
@@ -295,6 +371,38 @@ func TestNewLoggerRejectsUnknownPreset(t *testing.T) {
 	}
 	if got, want := err.Error(), "observability: unknown logger preset"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestUnknownPresetIsRejectedAtEveryPublicConstructionBoundary(t *testing.T) {
+	t.Parallel()
+
+	const want = "observability: unknown logger preset"
+	tests := []struct {
+		name      string
+		construct func()
+	}{
+		{name: "access logger", construct: func() { AccessLogger(AccessLoggerConfig{Preset: Preset("bogus")}) }},
+		{name: "request context", construct: func() { RequestContext(RequestContextConfig{Preset: Preset("bogus")}) }},
+		{
+			name: "HTTP request context",
+			construct: func() {
+				HTTPRequestContext(HTTPRequestContextConfig{Preset: Preset("bogus")})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				recovered := recover()
+				err, ok := recovered.(error)
+				if !ok || err.Error() != want {
+					t.Fatalf("%s panic = %#v, want %q", tt.name, recovered, want)
+				}
+			}()
+			tt.construct()
+		})
 	}
 }
 

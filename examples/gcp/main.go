@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/janisto/huma-observability"
+	"github.com/janisto/huma-observability/v2"
 )
 
 func main() {
@@ -22,18 +22,38 @@ func main() {
 		panic(err)
 	}
 
-	server := &http.Server{Addr: ":8080", Handler: newGCPHandler(logger), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           newGCPHandler(logger, nil),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	if err := server.ListenAndServe(); err != nil {
 		logger.Error("server stopped", zap.Error(err))
 	}
 }
 
-func newGCPHandler(logger *zap.Logger) http.Handler {
+func newGCPHandler(logger *zap.Logger, now func() time.Time) http.Handler {
+	return newHandler(logger, obs.PresetGCP, now)
+}
+
+func newHandler(
+	logger *zap.Logger,
+	preset obs.Preset,
+	now func() time.Time,
+) http.Handler {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("Example API", "1.0.0"))
-	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{Logger: logger, Preset: obs.PresetGCP}))
-	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{Logger: logger, Preset: obs.PresetGCP}))
-	huma.Get(api, "/health", health)
+	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{Logger: logger, Preset: preset}))
+	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
+		Logger: logger,
+		Preset: preset,
+		Now:    now,
+	}))
+	huma.Register(api, huma.Operation{
+		OperationID: "health_check",
+		Method:      http.MethodGet,
+		Path:        "/health",
+	}, health)
 	return mux
 }
 

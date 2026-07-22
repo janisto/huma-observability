@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/zap"
@@ -16,7 +18,6 @@ const (
 	defaultRequestIDHeader   = "X-Request-Id"
 	defaultTraceparentHeader = "traceparent"
 	defaultTracestateHeader  = "tracestate"
-	maxTracestateLen         = 512
 )
 
 var fallbackRequestIDCounter atomic.Uint64
@@ -24,10 +25,12 @@ var fallbackRequestIDCounter atomic.Uint64
 type contextKey struct{}
 
 type requestMetadata struct {
-	RequestID     string
-	CorrelationID string
-	Trace         TraceContext
-	Logger        *zap.Logger
+	RequestID         string
+	CorrelationID     string
+	Trace             TraceContext
+	Preset            Preset
+	TraceContextLevel TraceContextLevel
+	Logger            *zap.Logger
 }
 
 // RequestContextConfig configures RequestContext middleware.
@@ -35,6 +38,7 @@ type RequestContextConfig struct {
 	RequestIDHeader       string
 	TraceparentHeader     string
 	TracestateHeader      string
+	TraceContextLevel     TraceContextLevel
 	ResponseHeader        string
 	DisableResponseHeader bool
 	NewRequestID          func() string
@@ -57,6 +61,9 @@ func RequestContext(config RequestContextConfig) func(huma.Context, func(huma.Co
 				metadata.Logger = loggerWithMetadata(existing.Logger, metadata, cfg.Preset)
 			}
 			ctx = huma.WithValue(ctx, contextKey{}, metadata)
+		} else {
+			requireMatchingPreset(metadata, cfg.Preset)
+			requireMatchingTraceContextLevel(metadata, cfg.TraceContextLevel)
 		}
 		if cfg.Logger != nil && metadata.Logger == nil {
 			ctx = withRequestLogger(ctx, metadata, loggerWithMetadata(cfg.Logger, metadata, cfg.Preset))
@@ -98,6 +105,14 @@ func Trace(ctx context.Context) TraceContext {
 }
 
 func normalizeRequestContextConfig(config RequestContextConfig) RequestContextConfig {
+	if err := validatePreset(config.Preset); err != nil {
+		panic(err)
+	}
+	level, err := ResolveTraceContextLevel(config.TraceContextLevel)
+	if err != nil {
+		panic(err)
+	}
+	config.TraceContextLevel = level
 	if config.RequestIDHeader == "" {
 		config.RequestIDHeader = defaultRequestIDHeader
 	}
@@ -121,36 +136,40 @@ func normalizeRequestContextConfig(config RequestContextConfig) RequestContextCo
 
 func buildRequestMetadata(ctx huma.Context, config RequestContextConfig) *requestMetadata {
 	return buildRequestMetadataFromHeaders(
-		ctx.Header(config.RequestIDHeader),
-		ctx.Header(config.TraceparentHeader),
-		combinedHeaderValues(ctx, config.TracestateHeader),
+		rawHeaderValues(ctx, config.RequestIDHeader),
+		rawHeaderValues(ctx, config.TraceparentHeader),
+		rawHeaderValues(ctx, config.TracestateHeader),
 		config,
 	)
 }
 
-func combinedHeaderValues(ctx huma.Context, name string) string {
+func rawHeaderValues(ctx huma.Context, name string) []string {
 	var values []string
 	ctx.EachHeader(func(headerName, value string) {
 		if strings.EqualFold(headerName, name) {
 			values = append(values, value)
 		}
 	})
-	return strings.Join(values, ",")
+	return values
 }
 
 func buildRequestMetadataFromHeaders(
-	requestID string,
-	traceparent string,
-	tracestate string,
+	requestIDValues []string,
+	traceparentValues []string,
+	tracestateValues []string,
 	config RequestContextConfig,
 ) *requestMetadata {
-	if !config.ValidateRequestID(requestID) {
-		requestID = newValidRequestID(config.NewRequestID, config.ValidateRequestID)
+	requestID, singleRequestID := singleRawHeaderValue(requestIDValues)
+	if !singleRequestID || !validIncomingRequestID(requestID, config.ValidateRequestID) {
+		requestID = newValidRequestID(config.NewRequestID)
 	}
 
-	trace, ok := ParseTraceparent(traceparent)
-	if ok {
-		if len(tracestate) <= maxTracestateLen {
+	var trace TraceContext
+	if traceparent, singleTraceparent := singleRawHeaderValue(traceparentValues); singleTraceparent {
+		trace, _ = ParseTraceparentWithLevel(traceparent, config.TraceContextLevel)
+	}
+	if trace.Valid {
+		if tracestate, valid := parseTracestate(tracestateValues, config.TraceContextLevel); valid {
 			trace.Tracestate = tracestate
 		}
 	}
@@ -161,18 +180,49 @@ func buildRequestMetadataFromHeaders(
 	}
 
 	return &requestMetadata{
-		RequestID:     requestID,
-		CorrelationID: correlationID,
-		Trace:         trace,
+		RequestID:         requestID,
+		CorrelationID:     correlationID,
+		Trace:             trace,
+		Preset:            config.Preset,
+		TraceContextLevel: config.TraceContextLevel,
 	}
 }
 
-func ensureRequestMetadata(ctx huma.Context, preset Preset) (*requestMetadata, huma.Context) {
+func requireMatchingPreset(metadata *requestMetadata, expected Preset) {
+	if metadata.Preset != expected {
+		panic("provider preset mismatch between RequestContext and AccessLogger")
+	}
+}
+
+func requireMatchingTraceContextLevel(metadata *requestMetadata, expected TraceContextLevel) {
+	actual, err := ResolveTraceContextLevel(metadata.TraceContextLevel)
+	if err != nil || actual != expected {
+		panic("trace context level mismatch between RequestContext and AccessLogger")
+	}
+}
+
+func singleRawHeaderValue(values []string) (string, bool) {
+	if len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func ensureRequestMetadata(
+	ctx huma.Context,
+	preset Preset,
+	traceContextLevel TraceContextLevel,
+) (*requestMetadata, huma.Context) {
+	config := normalizeRequestContextConfig(RequestContextConfig{
+		Preset:            preset,
+		TraceContextLevel: traceContextLevel,
+	})
 	if metadata := metadataFromContext(ctx.Context()); metadata != nil && metadata.RequestID != "" {
+		requireMatchingPreset(metadata, config.Preset)
+		requireMatchingTraceContextLevel(metadata, config.TraceContextLevel)
 		return metadata, ctx
 	}
 	existing := metadataFromContext(ctx.Context())
-	config := normalizeRequestContextConfig(RequestContextConfig{})
 	metadata := buildRequestMetadata(ctx, config)
 	if existing != nil && existing.Logger != nil {
 		metadata.Logger = loggerWithMetadata(existing.Logger, metadata, preset)
@@ -223,24 +273,62 @@ func metadataFromContext(ctx context.Context) *requestMetadata {
 	return metadata
 }
 
-func newValidRequestID(newRequestID func() string, validate func(string) bool) string {
-	for range 2 {
-		id := newRequestID()
-		if validate(id) {
-			return id
-		}
+func newValidRequestID(newRequestID func() string) string {
+	if id, ok := callRequestIDGenerator(newRequestID); ok {
+		return id
 	}
 
 	id := fallbackRequestID()
-	if validate(id) {
+	if DefaultValidateRequestID(id) {
 		return id
 	}
 	return "00000000000000000000000000000000"
 }
 
+func validIncomingRequestID(value string, validate func(string) bool) (valid bool) {
+	if !nativeSafeRequestID(value) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			valid = false
+		}
+	}()
+	return validate(value)
+}
+
+func nativeSafeRequestID(value string) bool {
+	if value == "" || !utf8.ValidString(value) || value[0] == ' ' || value[0] == '\t' ||
+		value[len(value)-1] == ' ' || value[len(value)-1] == '\t' {
+		return false
+	}
+	for index := range len(value) {
+		character := value[index]
+		if (character < 0x20 && character != '\t') || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func callRequestIDGenerator(newRequestID func() string) (id string, valid bool) {
+	defer func() {
+		if recover() != nil {
+			id = ""
+			valid = false
+		}
+	}()
+	id = newRequestID()
+	return id, DefaultValidateRequestID(id)
+}
+
 func defaultNewRequestID() string {
+	return randomRequestID(rand.Reader)
+}
+
+func randomRequestID(reader io.Reader) string {
 	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
+	if _, err := io.ReadFull(reader, bytes[:]); err != nil {
 		return fallbackRequestID()
 	}
 	return hex.EncodeToString(bytes[:])
