@@ -61,6 +61,10 @@ qa: workflow-check format lint build test race
 vuln:
     govulncheck ./...
 
+[group('package')]
+e2e-image image_tag:
+    docker build --file e2e/Dockerfile --tag "{{ image_tag }}" .
+
 # Download dependencies without changing module files.
 [group('lifecycle')]
 install:
