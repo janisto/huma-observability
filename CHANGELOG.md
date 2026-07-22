@@ -7,9 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-The changes in this section target `v2.0.0` under module path
-`github.com/janisto/huma-observability/v2`. They must not be tagged on the v1
-module path.
+## [2.0.0] - 2026-07-22
+
+Version 2 uses module path `github.com/janisto/huma-observability/v2` and cannot
+be tagged on the v1 module path.
 
 ### Migration from v1
 
@@ -217,7 +218,8 @@ module path.
 - Added README and runnable examples for basic, GCP, AWS, Azure, and
   project-local wrapper usage.
 
-[Unreleased]: https://github.com/janisto/huma-observability/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/janisto/huma-observability/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/janisto/huma-observability/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/janisto/huma-observability/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/janisto/huma-observability/compare/v0.3.1...v1.0.0
 [0.3.1]: https://github.com/janisto/huma-observability/compare/v0.3.0...v0.3.1
