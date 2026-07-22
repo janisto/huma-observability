@@ -90,7 +90,19 @@ into human onboarding documentation.
 
 ## Releases
 
-- Prepare releases through a pull request titled `chore: prepare vX.Y.Z`.
+- Prepare releases from a same-repository source branch named
+  `release/prepare-vX.Y.Z` through a pull request titled
+  `chore: prepare vX.Y.Z` that targets `main`.
+- Treat `release/` as a reserved namespace. Do not use an alternate branch
+  name to bypass the conditional `E2E consumer image` job or the required
+  `Release E2E gate` check.
+- For local image-build diagnosis, run
+  `just e2e-image observability-e2e-local:manual`. This proves only that the
+  production-shaped consumer image builds; actual log verification belongs
+  to the central `janisto/observability` repository.
+- After merging the release preparation, do not tag or publish until the
+  central repository pins the final merged commit and
+  `just e2e --authoritative` passes on Docker Engine.
 - Update `CHANGELOG.md` and public documentation together. Go module versions
   come from tags; do not add a separate version constant.
 - Run `just qa`, `just vuln`, and `git diff --check` before committing a release.
