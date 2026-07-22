@@ -26,13 +26,8 @@ Every service follows the same shape:
 The canonical GCP wiring is:
 
 ```go
-profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
-if err != nil {
-	panic(err)
-}
 logger, err := obs.NewLogger(obs.LoggerConfig{
-	Preset:            obs.PresetGCP,
-	GCPProfileVersion: profileVersion,
+	Preset: obs.PresetGCP,
 })
 if err != nil {
 	panic(err)
@@ -45,9 +40,8 @@ api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
 	Preset: obs.PresetGCP,
 }))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger:            logger,
-	Preset:            obs.PresetGCP,
-	GCPProfileVersion: profileVersion,
+	Logger: logger,
+	Preset: obs.PresetGCP,
 }))
 ```
 
@@ -112,8 +106,7 @@ merely because it exceeds the 512-character minimum propagation capacity.
 Raw path, direct peer IP, and user agent capture are disabled by default and
 have independent `AccessLoggerConfig` opt-ins. The GCP profile does not change
 those defaults. If path capture is enabled, `httpRequest.requestUrl` is the
-query-free path only. The installed unpinned GCP profile resolves to `0.1.0` at
-construction; pass `GCPProfileVersionV0_1_0` to pin it explicitly.
+query-free path only.
 
 ## Provider-Neutral JSON
 
@@ -121,13 +114,8 @@ construction; pass `GCPProfileVersionV0_1_0` to pin it explicitly.
 go run ./examples/basic
 ```
 
-The executable leaves both trace-level fields unset and therefore uses Level
-1. To enable Level 2, follow `newLevel2Handler`, which assigns
-`TraceContextLevel2` to both middleware configs. The package test executes the
-default and Level 2 configurations against a version-`00` traceparent with
-flags `03`. The default preset writes `level` and generic
-correlation fields without provider-specific aliases; only Level 2 emits
-`trace_id_random`.
+The default preset writes `level` and the generic correlation fields without
+provider-specific trace aliases.
 
 ## AWS
 

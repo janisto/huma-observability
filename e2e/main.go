@@ -17,11 +17,8 @@ import (
 )
 
 type caseConfig struct {
-	preset       obs.Preset
-	traceLevel   obs.TraceContextLevel
-	gcpVersion   obs.GCPProfileVersion
-	awsVersion   obs.AWSProfileVersion
-	azureVersion obs.AzureProfileVersion
+	preset     obs.Preset
+	traceLevel obs.TraceContextLevel
 }
 
 type traceInput struct {
@@ -60,10 +57,7 @@ func main() {
 		log.Fatal(err)
 	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset:              selected.preset,
-		GCPProfileVersion:   selected.gcpVersion,
-		AWSProfileVersion:   selected.awsVersion,
-		AzureProfileVersion: selected.azureVersion,
+		Preset: selected.preset,
 	})
 	if err != nil {
 		log.Fatal("logger configuration failed")
@@ -81,12 +75,9 @@ func main() {
 		TraceContextLevel: selected.traceLevel,
 	}))
 	accessConfig := obs.AccessLoggerConfig{
-		Logger:              logger,
-		Preset:              selected.preset,
-		TraceContextLevel:   selected.traceLevel,
-		GCPProfileVersion:   selected.gcpVersion,
-		AWSProfileVersion:   selected.awsVersion,
-		AzureProfileVersion: selected.azureVersion,
+		Logger:            logger,
+		Preset:            selected.preset,
+		TraceContextLevel: selected.traceLevel,
 	}
 	if selected.preset == obs.PresetGCP {
 		accessConfig.ExtraFields = func(huma.Context) []zap.Field {
@@ -143,15 +134,12 @@ func configuredCase(name string) (caseConfig, error) {
 		return config, nil
 	case "aws_level1":
 		config.preset = obs.PresetAWS
-		config.awsVersion = obs.AWSProfileVersionV0_1_0
 		return config, nil
 	case "azure_level1":
 		config.preset = obs.PresetAzure
-		config.azureVersion = obs.AzureProfileVersionV0_1_0
 		return config, nil
 	case "gcp_level1":
 		config.preset = obs.PresetGCP
-		config.gcpVersion = obs.GCPProfileVersionV0_1_0
 		return config, nil
 	default:
 		return caseConfig{}, fmt.Errorf("unsupported OBS_E2E_CASE %q", name)

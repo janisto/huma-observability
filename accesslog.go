@@ -20,18 +20,15 @@ type StatusLeveler func(status int) zapcore.Level
 
 // AccessLoggerConfig configures AccessLogger middleware.
 type AccessLoggerConfig struct {
-	Logger              *zap.Logger
-	Preset              Preset
-	GCPProfileVersion   GCPProfileVersion
-	AWSProfileVersion   AWSProfileVersion
-	AzureProfileVersion AzureProfileVersion
-	TraceContextLevel   TraceContextLevel
-	CapturePath         bool
-	CapturePeerIP       bool
-	CaptureUserAgent    bool
-	Now                 func() time.Time
-	StatusLevel         StatusLeveler
-	ExtraFields         func(huma.Context) []zap.Field
+	Logger            *zap.Logger
+	Preset            Preset
+	TraceContextLevel TraceContextLevel
+	CapturePath       bool
+	CapturePeerIP     bool
+	CaptureUserAgent  bool
+	Now               func() time.Time
+	StatusLevel       StatusLeveler
+	ExtraFields       func(huma.Context) []zap.Field
 }
 
 // AccessLogger returns Huma middleware that installs a request-scoped Zap
@@ -89,21 +86,9 @@ func normalizeAccessLoggerConfig(config AccessLoggerConfig) AccessLoggerConfig {
 		panic(err)
 	}
 	config.TraceContextLevel = traceLevel
-	version, err := ResolveGCPProfileVersion(config.Preset, config.GCPProfileVersion)
-	if err != nil {
+	if err := validatePreset(config.Preset); err != nil {
 		panic(err)
 	}
-	config.GCPProfileVersion = version
-	awsVersion, err := ResolveAWSProfileVersion(config.Preset, config.AWSProfileVersion)
-	if err != nil {
-		panic(err)
-	}
-	config.AWSProfileVersion = awsVersion
-	azureVersion, err := ResolveAzureProfileVersion(config.Preset, config.AzureProfileVersion)
-	if err != nil {
-		panic(err)
-	}
-	config.AzureProfileVersion = azureVersion
 	if config.Logger == nil {
 		config.Logger = noopLogger
 	}

@@ -177,15 +177,10 @@ func exerciseHealthRoute(
 	t.Helper()
 
 	var output bytes.Buffer
-	var profileVersion obs.GCPProfileVersion
-	if preset == obs.PresetGCP {
-		profileVersion = obs.GCPProfileVersionV0_1_0
-	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset:            preset,
-		GCPProfileVersion: profileVersion,
-		Level:             level,
-		Writer:            &output,
+		Preset: preset,
+		Level:  level,
+		Writer: &output,
 	})
 	if err != nil {
 		t.Fatalf("NewLogger returned error: %v", err)
@@ -194,7 +189,7 @@ func exerciseHealthRoute(
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	request.Header.Set("X-Request-Id", "health-example")
 	response := httptest.NewRecorder()
-	newHandler(logger, preset, profileVersion, fixedGCPHealthClock()).ServeHTTP(response, request)
+	newHandler(logger, preset, fixedGCPHealthClock()).ServeHTTP(response, request)
 
 	return response, decodeLogRecords(t, output.String())
 }

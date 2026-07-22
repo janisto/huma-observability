@@ -14,14 +14,9 @@ import (
 )
 
 func main() {
-	profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
-	if err != nil {
-		panic(err)
-	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset:            obs.PresetGCP,
-		GCPProfileVersion: profileVersion,
-		Level:             zapcore.DebugLevel,
+		Preset: obs.PresetGCP,
+		Level:  zapcore.DebugLevel,
 	})
 	if err != nil {
 		panic(err)
@@ -29,7 +24,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           newGCPHandler(logger, profileVersion, nil),
+		Handler:           newGCPHandler(logger, nil),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := server.ListenAndServe(); err != nil {
@@ -37,24 +32,22 @@ func main() {
 	}
 }
 
-func newGCPHandler(logger *zap.Logger, profileVersion obs.GCPProfileVersion, now func() time.Time) http.Handler {
-	return newHandler(logger, obs.PresetGCP, profileVersion, now)
+func newGCPHandler(logger *zap.Logger, now func() time.Time) http.Handler {
+	return newHandler(logger, obs.PresetGCP, now)
 }
 
 func newHandler(
 	logger *zap.Logger,
 	preset obs.Preset,
-	profileVersion obs.GCPProfileVersion,
 	now func() time.Time,
 ) http.Handler {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("Example API", "1.0.0"))
 	api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{Logger: logger, Preset: preset}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-		Logger:            logger,
-		Preset:            preset,
-		GCPProfileVersion: profileVersion,
-		Now:               now,
+		Logger: logger,
+		Preset: preset,
+		Now:    now,
 	}))
 	huma.Register(api, huma.Operation{
 		OperationID: "health_check",

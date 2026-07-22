@@ -378,14 +378,6 @@ func TestUnknownPresetIsRejectedAtEveryPublicConstructionBoundary(t *testing.T) 
 	t.Parallel()
 
 	const want = "observability: unknown logger preset"
-	if resolved, err := ResolveGCPProfileVersion(
-		Preset("bogus"),
-		"",
-	); resolved != "" || err == nil ||
-		err.Error() != want {
-		t.Fatalf("ResolveGCPProfileVersion(bogus) = (%q, %v), want empty and %q", resolved, err, want)
-	}
-
 	tests := []struct {
 		name      string
 		construct func()
@@ -411,82 +403,6 @@ func TestUnknownPresetIsRejectedAtEveryPublicConstructionBoundary(t *testing.T) 
 			}()
 			tt.construct()
 		})
-	}
-}
-
-func TestGCPProfileVersionResolutionAndLoggerValidation(t *testing.T) {
-	t.Parallel()
-
-	latest, err := ResolveGCPProfileVersion(PresetGCP, "")
-	if err != nil {
-		t.Fatalf("ResolveGCPProfileVersion latest returned error: %v", err)
-	}
-	if latest != GCPProfileVersionV0_1_0 {
-		t.Fatalf("latest GCP profile = %q, want %q", latest, GCPProfileVersionV0_1_0)
-	}
-	pinned, err := ResolveGCPProfileVersion(PresetGCP, GCPProfileVersionV0_1_0)
-	if err != nil {
-		t.Fatalf("ResolveGCPProfileVersion pin returned error: %v", err)
-	}
-	if pinned != GCPProfileVersionV0_1_0 {
-		t.Fatalf("pinned GCP profile = %q, want %q", pinned, GCPProfileVersionV0_1_0)
-	}
-
-	tests := []struct {
-		name   string
-		config LoggerConfig
-		want   string
-	}{
-		{
-			name:   "unsupported version",
-			config: LoggerConfig{Preset: PresetGCP, GCPProfileVersion: "0.2.0"},
-			want:   `observability: unsupported GCP profile version "0.2.0"`,
-		},
-		{
-			name:   "cross-preset version",
-			config: LoggerConfig{Preset: PresetAWS, GCPProfileVersion: GCPProfileVersionV0_1_0},
-			want:   "observability: GCP profile version requires GCP preset",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			logger, err := NewLogger(tt.config)
-			if err == nil {
-				t.Fatal("NewLogger accepted invalid GCP profile selection")
-			}
-			if logger != nil {
-				t.Fatalf("NewLogger returned partial logger: %#v", logger)
-			}
-			if err.Error() != tt.want {
-				t.Fatalf("error = %q, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestAWSAndAzureProfileVersionResolution(t *testing.T) {
-	t.Parallel()
-	aws, err := ResolveAWSProfileVersion(PresetAWS, "")
-	if err != nil || aws != AWSProfileVersionV0_1_0 {
-		t.Fatalf("AWS latest = %q, %v", aws, err)
-	}
-	azure, err := ResolveAzureProfileVersion(PresetAzure, AzureProfileVersionV0_1_0)
-	if err != nil || azure != AzureProfileVersionV0_1_0 {
-		t.Fatalf("Azure pin = %q, %v", azure, err)
-	}
-	if _, resolveErr := ResolveAWSProfileVersion(PresetAWS, "0.2.0"); resolveErr == nil {
-		t.Fatal("unsupported AWS version accepted")
-	}
-	if _, resolveErr := ResolveAzureProfileVersion(PresetGCP, AzureProfileVersionV0_1_0); resolveErr == nil {
-		t.Fatal("cross-preset Azure version accepted")
-	}
-	logger, err := NewLogger(LoggerConfig{
-		Preset:            PresetAWS,
-		AWSProfileVersion: AWSProfileVersionV0_1_0,
-	})
-	if err != nil || logger == nil {
-		t.Fatalf("AWS logger pin = %#v, %v", logger, err)
 	}
 }
 

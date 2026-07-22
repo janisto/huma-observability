@@ -128,13 +128,8 @@ import (
 )
 
 func setup(api huma.API) error {
-	profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
-	if err != nil {
-		return err
-	}
 	logger, err := obs.NewLogger(obs.LoggerConfig{
-		Preset:            obs.PresetGCP,
-		GCPProfileVersion: profileVersion,
+		Preset: obs.PresetGCP,
 	})
 	if err != nil {
 		return err
@@ -146,9 +141,8 @@ func setup(api huma.API) error {
 		TraceContextLevel: obs.TraceContextLevel1,
 	}))
 	api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-		Logger:            logger,
-		Preset:            obs.PresetGCP,
-		GCPProfileVersion: profileVersion,
+		Logger: logger,
+		Preset: obs.PresetGCP,
 	}))
 
 	return nil
@@ -240,12 +234,6 @@ api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
 }))
 ```
 
-The provider-neutral [`examples/basic`](examples/basic) leaves the trace-level
-fields unset for its default Level 1 server. Its `newLevel2Handler` shows the
-Level 2 opt-in by assigning `TraceContextLevel2` to both middleware configs.
-The native test sends flags `03` through both paths and verifies that only
-Level 2 emits `trace_id_random`.
-
 `ResolveTraceContextLevel(0)` exposes the effective default. Unsupported
 levels fail during middleware construction. Exactly one raw `traceparent`
 field-line is eligible. Version `00` uses exact framing; future-version suffix
@@ -291,13 +279,8 @@ regardless of middleware order.
 ### Google Cloud
 
 ```go
-profileVersion, err := obs.ResolveGCPProfileVersion(obs.PresetGCP, "")
-if err != nil {
-	return err
-}
 logger, err := obs.NewLogger(obs.LoggerConfig{
-	Preset:            obs.PresetGCP,
-	GCPProfileVersion: profileVersion,
+	Preset: obs.PresetGCP,
 })
 if err != nil {
 	return err
@@ -308,9 +291,8 @@ api.UseMiddleware(obs.RequestContext(obs.RequestContextConfig{
 	Preset: obs.PresetGCP,
 }))
 api.UseMiddleware(obs.AccessLogger(obs.AccessLoggerConfig{
-	Logger:            logger,
-	Preset:            obs.PresetGCP,
-	GCPProfileVersion: profileVersion,
+	Logger: logger,
+	Preset: obs.PresetGCP,
 }))
 ```
 
@@ -325,14 +307,8 @@ The middleware does not emit `logging.googleapis.com/spanId` from a W3C
 `parent-id`. A log span ID must come from a real current span; the incoming
 parent ID is not the same semantic value.
 
-The installed package supports GCP profile `0.1.0`. An omitted version resolves
-to the newest supported version during construction; an exact pin uses
-`obs.GCPProfileVersionV0_1_0`. `ResolveGCPProfileVersion` exposes the effective
-version for diagnostics and coherent logger/access configuration. Resolution
-does not query Google Cloud, a registry, or the network. `NewLogger` returns an
-error for an invalid selection; `AccessLogger` panics immediately during
-middleware construction because its established constructor has no error
-return.
+The installed package owns one GCP field mapping. Select it with `PresetGCP`
+for both logger and middleware configuration.
 
 ### AWS
 
@@ -348,10 +324,8 @@ The AWS preset keeps logs as flat JSON with `timestamp`, `level`, and
 The middleware does not create AWS X-Ray segments and does not emit `span_id`
 from an incoming W3C parent ID.
 
-The installed package supports exact current AWS profile `0.1.0`. Omission
-resolves to it at construction; pin with `obs.AWSProfileVersionV0_1_0` and
-inspect the effective value with `ResolveAWSProfileVersion`. Other versions and
-cross-preset pins fail without a network lookup.
+Select the AWS field mapping with `PresetAWS` for both logger and middleware
+configuration.
 
 ### Azure
 
@@ -365,10 +339,8 @@ The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
 - `operation_Id`, mapped from the W3C trace ID.
 - `operation_ParentId`, mapped from the W3C parent ID.
 
-The installed package supports exact current Azure profile `0.1.0`. Omission
-resolves to it at construction; pin with `obs.AzureProfileVersionV0_1_0` and
-inspect the effective value with `ResolveAzureProfileVersion`. Other versions
-and cross-preset pins fail without a network lookup.
+Select the Azure field mapping with `PresetAzure` for both logger and
+middleware configuration.
 
 ## Field Contract
 
@@ -500,18 +472,13 @@ stdout and Zap internal errors to stderr.
 Useful options:
 
 - `Preset`: selects generic, GCP, AWS, or Azure field naming.
-- `GCPProfileVersion`: optionally pins a supported GCP profile; omission selects
-  the newest installed version when `PresetGCP` is selected.
-- `AWSProfileVersion` and `AzureProfileVersion`: optionally pin the exact
-  current `0.1.0` profile for their matching preset; omission resolves to it.
 - `Level`: sets the Zap level enabler. Defaults to info.
 - `Writer`: overrides the application log destination.
 - `ErrorWriter`: overrides Zap's internal error destination.
 - `AddCaller`: includes Zap caller fields.
 - `Development`: enables Zap development behavior.
 
-`AccessLoggerConfig` separately provides `GCPProfileVersion`,
-`AWSProfileVersion`, `AzureProfileVersion`, `TraceContextLevel`, `CapturePath`,
+`AccessLoggerConfig` separately provides `TraceContextLevel`, `CapturePath`,
 `CapturePeerIP`, `CaptureUserAgent`, the injectable monotonic `Now` clock,
 status-level mapping, and collision-filtered extra fields.
 
