@@ -2,6 +2,8 @@
 # https://github.com/casey/just
 # Development and release checks for huma-observability.
 
+CONTAINER_RUNTIME := if `command -v podman 2>/dev/null || true` != "" { "podman" } else { "docker" }
+
 @_:
     just --list
 
@@ -63,7 +65,7 @@ vuln:
 
 [group('package')]
 e2e-image image_tag:
-    docker build --file e2e/Dockerfile --tag "{{ image_tag }}" .
+    {{ CONTAINER_RUNTIME }} build --file e2e/Dockerfile --tag "{{ image_tag }}" .
 
 # Download dependencies without changing module files.
 [group('lifecycle')]

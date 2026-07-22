@@ -68,7 +68,7 @@ This is not official Huma framework middleware. It is a small, opinionated
 package for services that want the same production logging contract without
 copying request middleware into every application.
 
-## When To Use It
+## When to use it
 
 Use this package when your Huma v2 service needs:
 
@@ -86,20 +86,20 @@ Use this package when your Huma v2 service needs:
 It also does not export metrics, create AWS X-Ray segments, or emit generic
 `net/http` access logs.
 
-## Requirements
+<a id="requirements"></a>
 
-- Go 1.25 or newer.
+## Requirements and installation
+
+- Go 1.25 or newer; deploy with the latest available patch release.
 - Huma v2.30.0 or newer within the Huma v2 line.
 - Zap.
 
-The v1 API and log contract remains available at the unsuffixed module path.
+The v1 API and log contract remain available at the unsuffixed module path.
 This checkout targets v2 because its privacy defaults and structured output are
 intentionally incompatible with v1. See the changelog migration section before
 upgrading.
 Version 2 provides no v1 field aliases, option shims, or unsuffixed import
 fallback; applications must migrate to the documented v2 API and module path.
-
-## Install
 
 ```sh
 go get github.com/janisto/huma-observability/v2
@@ -112,7 +112,7 @@ uses the `obs` identifier:
 import "github.com/janisto/huma-observability/v2"
 ```
 
-## Quick Start
+## Complete setup
 
 When this documentation shows one configuration, it uses GCP. Complete
 runnable GCP, provider-neutral, AWS, and Azure applications are available in
@@ -154,7 +154,7 @@ Middleware order is part of the contract: install `RequestContext` before
 request-scoped logger; `AccessLogger` writes the Huma operation-aware access
 log.
 
-## HTTP Request Context
+## HTTP request context
 
 For services with both Huma and non-Huma routes, install `HTTPRequestContext` at
 the outer router boundary:
@@ -177,7 +177,7 @@ request keeps one request ID across both layers.
 router-owned. Huma routes should use `AccessLogger` for operation-aware access
 logs with `path_template` and `operation_id`.
 
-## Handler Logging
+## Handler logging
 
 Use `obs.Logger(ctx)` anywhere you have the request `context.Context`.
 
@@ -215,7 +215,7 @@ request-context middleware may not have `request_id`; that means the request did
 not cross the package boundary yet, the middleware order is wrong, or the log is
 intentionally outside an HTTP request.
 
-## Trace Correlation
+## Trace correlation
 
 W3C `traceparent` is the only trace context input parsed by this package. When
 the header is valid, the W3C trace ID becomes the request `correlation_id` and
@@ -269,7 +269,7 @@ and `otelhttp.NewTransport` instruments HTTP clients and outbound propagation.
 This package does not configure OpenTelemetry SDKs, exporters, samplers, or
 global tracer providers.
 
-## Cloud Presets
+## Cloud presets
 
 Use the same preset for `NewLogger`, `RequestContext`, `AccessLogger`, and
 `HTTPRequestContext` when those pieces are used together.
@@ -342,7 +342,7 @@ The Azure preset keeps logs as flat JSON with `timestamp`, `level`, and
 Select the Azure field mapping with `PresetAzure` for both logger and
 middleware configuration.
 
-## Field Contract
+## Structured log contract
 
 Package-owned fields use `snake_case`. Provider-required fields keep the names
 expected by the target platform.
@@ -411,17 +411,18 @@ Logger keys:
 
 `AccessLoggerConfig.ExtraFields` may add application-specific fields to Huma
 access logs. Exact fields owned by the access envelope, correlation metadata,
-or selected provider profile are ignored at the top level to avoid duplicate
+or selected provider preset are ignored at the top level to avoid duplicate
 JSON keys. Other provider-looking and application namespace keys remain
 application-owned, including exact aliases belonging only to an inactive
-provider profile. Fields after `zap.Namespace` are nested and cannot collide
+provider preset. Fields after `zap.Namespace` are nested and cannot collide
 with package-owned top-level fields. If the returned slice repeats a custom
-key, the first value wins. Inline object marshalers are ignored because their
-inner keys cannot be checked before they enter the access-record namespace.
+key, the first value wins. Inline object marshalers returned by `ExtraFields`
+are ignored because their inner keys cannot be checked before they enter the
+access-record namespace.
 
 The logger returned by `NewLogger`, including request-scoped derivatives of
 that logger returned by `Logger(ctx)`, protects only exact application-envelope,
-correlation, and selected provider-profile fields at the top level. Access-only
+correlation, and selected provider-preset fields at the top level. Access-only
 fields and fields inside `zap.Namespace` remain application-owned. Inline
 marshalers, externally supplied Zap loggers,
 and custom core wrappers placed around a package logger cannot be inspected or
@@ -464,7 +465,7 @@ Use `RequestContextConfig` for Huma routes and `HTTPRequestContextConfig` for
 router-wide HTTP middleware when you need custom request ID or trace header
 names.
 
-## Logger Configuration
+## Logger configuration
 
 `NewLogger` creates a JSON Zap logger. By default it writes application logs to
 stdout and Zap internal errors to stderr.
@@ -489,7 +490,7 @@ status-less case the level is info and the status callback is not invoked.
 Handler errors converted by Huma into completed 4xx/5xx responses remain normal
 responses and omit `terminal_reason`.
 
-## Panic Behavior
+## Panic behavior
 
 `AccessLogger` logs an error access record with terminal reason `panic` when
 downstream Huma middleware or handlers panic, then re-panics. Status is retained
@@ -501,7 +502,7 @@ possible, handler behavior is unchanged, and failed writes are not retried. The
 package does not recover the request or hide a downstream panic from upstream
 recovery middleware.
 
-## Optional Local Wrapper
+## Optional local wrapper
 
 Applications that want shorter local logging helpers can add them in
 application code. A complete copyable example is available at
@@ -516,7 +517,7 @@ applog.Error(ctx, "github request failed", err, zap.Int("status", status))
 The package itself stays Zap-native and does not add application-specific
 `LogWarn` or `LogError` wrappers.
 
-## Validation
+## Development
 
 Development uses [just](https://github.com/casey/just). On macOS, install the
 workflow linters:
@@ -533,12 +534,12 @@ just qa
 just vuln
 ```
 
-`just qa` runs formatting, lint, build, tests, race tests,
+`just qa` includes formatting, lint, build, tests, race tests,
 [actionlint](https://github.com/rhysd/actionlint), and
 [zizmor](https://docs.zizmor.sh/). `just vuln` runs the Go vulnerability scanner
-separately.
+separately. Maintainers should follow the public [release guide](RELEASE.md).
 
-## Mutation Testing
+## Mutation testing
 
 Install [Gremlins](https://github.com/go-gremlins/gremlins) with Homebrew on
 macOS:
@@ -560,7 +561,7 @@ gaps; equivalent transformations do not need artificial assertions. Mutation
 testing intentionally runs outside `just qa` and may take several minutes. The
 configured per-mutant safety timeout does not limit the total campaign time.
 
-## Fuzz Testing
+## Fuzz testing
 
 This repository uses Go's native fuzzing engine for `FuzzParseTraceparent`.
 Run the default ten-second session with:
@@ -589,6 +590,18 @@ fix when it represents behavior the parser must preserve.
 
 See the [Go fuzzing documentation](https://go.dev/doc/security/fuzz/) for the
 engine's workflow and additional flags.
+
+## Consumer image
+
+Run `just e2e-image observability-e2e-local:manual` to build a
+production-shaped consumer image from the exact checkout. The recipe prefers
+Podman and falls back to Docker.
+
+Building the image verifies packaging and integration only. It does not run the
+image, validate emitted logs, compare implementations, or approve a release.
+Optional independent tooling may exercise the public contract documented in
+[`e2e/README.md`](e2e/README.md). Any audit result is informational and is never
+a publication requirement.
 
 ## References
 
